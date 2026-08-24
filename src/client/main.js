@@ -903,7 +903,7 @@ function render(now) {
             glowUniforms.model, false,
             Mat4.translationScale(hit.x * 2.0, hit.y * 2.0, hit.z * 2.0, 1.001)
         );
-        gl.uniform4f(glowUniforms.color, 1.0, 1.0, 1.0, 0.45);
+        gl.uniform4f(glowUniforms.color, 1.0, 1.0, 1.0, 0.2);
 
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
