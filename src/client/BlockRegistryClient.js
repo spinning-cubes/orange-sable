@@ -50,6 +50,13 @@ export class BlockRegistryClient {
         return !!def && def.isSolid !== false;
     }
 
+    isSelectable(id) {
+        const def = this.def(id);
+        if (!def) return true;
+        if (def.isSelectable !== undefined) return !!def.isSelectable;
+        return !def.isFluid;
+    }
+
     renderType(id) {
         const def = this.def(id);
         return (def && def.renderType) || 'node';
@@ -64,6 +71,19 @@ export class BlockRegistryClient {
         if (!def) return 'cutout';
         if (def.transparentType) return def.transparentType;
         return def.isFluid ? 'blend' : 'cutout';
+    }
+
+    // Per-renderType default (plants skip AO); explicit defs override.
+    ambientOcclusion(id) {
+        const def = this.def(id);
+        if (!def) return true;
+        if (def.ambientOcclusion !== undefined) return !!def.ambientOcclusion;
+        return def.renderType ? def.renderType !== 'plant' : true;
+    }
+
+    textureAlign(id) {
+        const def = this.def(id);
+        return (def && def.textureAlign) || { u: 'world', v: 'world' };
     }
 
     // Atlas layer for a block face. faceIndex follows mesh.js FACES order:

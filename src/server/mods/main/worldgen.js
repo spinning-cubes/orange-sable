@@ -1,17 +1,19 @@
 main.registerDecoration({
-    node: 'test', 
+    node: 'grassplant', 
     density: 0.5,
     minHeight: 0,
     maxHeight: 64,
-    spread: 16,
-    biome: '*'
+    spread: 3,
+    biome: '*',
+    generatesOn: 'grass'
 });
 main.registerDecoration({
-    node: 'test_2', 
+    node: 'grassplant_sand', 
     density: 0.5,
     minHeight: 0,
     maxHeight: 64,
-    spread: 16,
-    biome: '*'
+    spread: 5,
+    biome: '*',
+    generatesOn: 'sand'
 });
 // for plant-like generation (flowers, grassplants, etc.)

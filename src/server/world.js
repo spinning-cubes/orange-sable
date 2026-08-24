@@ -142,9 +142,11 @@ export class ServerWorld extends BaseWorld {
 
                     // Ground must be real generated solid terrain, and the
                     // target cell must be free (skips water columns, tree
-                    // trunks and any other occupied spot).
+                    // trunks and any other occupied spot). generatesOn
+                    // further restricts which ground blocks qualify.
                     const ground = chunk.voxels.get(`${lx},${surfaceY},${lz}`);
                     if (ground === undefined || !blockRegistry.isSolid(ground)) continue;
+                    if (d.generatesOn !== '*' && !d.generatesOn.includes(ground)) continue;
                     if (chunk.has(lx, y, lz)) continue;
 
                     chunk.set(lx, y, lz, d.blockId);

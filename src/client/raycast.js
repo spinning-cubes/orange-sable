@@ -40,7 +40,7 @@ export function voxelRaycast(world, origin, direction, maxDist = 8) {
     let t = 0;
     let face = [0, 0, 0];
 
-    if (world.isSolid(gx, gy, gz)) {
+    if (world.isSelectable(gx, gy, gz)) {
         return { x: gx, y: gy, z: gz, face: [0, 0, 0], t: 0 };
     }
 
@@ -56,7 +56,7 @@ export function voxelRaycast(world, origin, direction, maxDist = 8) {
             face = [0, 0, -stepZ];
         }
 
-        if (world.isSolid(gx, gy, gz)) {
+        if (world.isSelectable(gx, gy, gz)) {
             return { x: gx, y: gy, z: gz, face, t };
         }
         if (t > maxT) break;

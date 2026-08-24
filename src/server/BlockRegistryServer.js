@@ -6,9 +6,11 @@
 // Mods are written against a `main` global (see mods/main/init.js):
 //   main.setModNamespace = "<ns>"
 //   main.registerBlock({ name, description, isTransparent, isFluid, isSolid,
-//                        actsTransparent,
+//                        isSelectable, actsTransparent,
 //                        renderType: 'node' | 'plant' | 'nodebox',
 //                        transparentType: 'cutout' | 'blend',
+//                        ambientOcclusion / ao,
+//                        textureAlign: 'world' | top/bottom/left/right combo,
 //                        nodebox: [ [id?, x1, y1, z1, x2, y2, z2], ... ],
 //                        texture(face, x, y, z, world, part) -> textureName })
 // renderType 'plant' draws two crossed quads and implies isTransparent.
@@ -20,6 +22,13 @@
 // neighbours keep their faces visible against such blocks and they cast
 // no AO, while renderType/transparentType stay untouched.
 // isSolid defaults to true and is forced false for fluids.
+// isSelectable defaults to !isFluid and drives selection raycasts only
+// (physics stays on isSolid).
+// ambientOcclusion (shorthand: ao) defaults to per-renderType behaviour
+// (on for nodes/nodeboxes, off for plants); setting it explicitly
+// overrides that. textureAlign (nodebox only) picks how faces map the
+// tile: 'world' projects from the full block, or anchor the sampled
+// region to any corner via top/bottom/left/right combos.
 // The texture resolver is evaluated once per face here so the manifest can
 // stay plain JSON (static layer indices) instead of shipping code.
 // Discovered by Vite (dev + build rewrite this call into a static module
@@ -86,7 +95,7 @@ export class BlockRegistryServer {
             await this.#loadMod(path, modName);
         }
         this.manifest = {
-            protocol: 4,
+            protocol: 6,
             blocks: this.blocks,
             textures: this.textureUrls
         };
@@ -167,6 +176,10 @@ export class BlockRegistryServer {
         const nodebox = renderType === 'nodebox'
             ? this.#normalizeNodebox(name, modName, def.nodebox)
             : null;
+        const textureAlign = renderType === 'nodebox'
+            ? this.#parseTextureAlign(name, modName, def.textureAlign)
+            : null;
+        const aoFlag = def.ambientOcclusion ?? def.ao;
 
         const resolve = (face, part) => {
             let tex;
@@ -190,8 +203,11 @@ export class BlockRegistryServer {
             actsTransparent: !!def.isTransparent || !!def.actsTransparent,
             isFluid: !!def.isFluid,
             isSolid: def.isFluid ? false : def.isSolid ?? true,
+            isSelectable: def.isSelectable ?? !def.isFluid,
+            ambientOcclusion: aoFlag === undefined ? renderType !== 'plant' : !!aoFlag,
             renderType,
             transparentType,
+            ...(textureAlign ? { textureAlign } : {}),
             textures: {
                 top: resolve('top'),
                 bottom: resolve('bottom'),
@@ -221,7 +237,8 @@ export class BlockRegistryServer {
     // worldgen scatters (flowers, grass plants, ...): one candidate spot per
     //   spread×spread world cell; `density` [0..1] is the chance the
     // candidate actually spawns; minHeight/maxHeight bound the terrain
-    // surface height; biome '*' matches every biome.
+    // surface height; biome '*' matches every biome. generatesOn ('*' by
+    // default) restricts the ground block: a name or array of names.
     #registerDecoration(namespace, modName, def) {
         if (!def || typeof def.node !== 'string' || !def.node) {
             throw new Error(`[block-registry] mod '${modName}' registered a decoration without a node`);
@@ -236,6 +253,30 @@ export class BlockRegistryServer {
             if (!Number.isFinite(n)) return fallback;
             return Math.min(hi, Math.max(lo, n));
         };
+
+        // generatesOn: '*' (default) scatters on any solid ground; a block
+        // name or array of names restricts placement to those ground types.
+        // Names resolve against already-registered blocks.
+        let generatesOn = '*';
+        if (def.generatesOn !== undefined && def.generatesOn !== '*') {
+            const toId = (raw) => {
+                const n = String(raw).includes(':') ? String(raw) : `${namespace}:${raw}`;
+                const id = this.id(n);
+                if (id === -1) {
+                    throw new Error(`[block-registry] decoration '${name}' (${modName}) generatesOn unknown block '${raw}'`);
+                }
+                return id;
+            };
+            if (!Array.isArray(def.generatesOn)) {
+                generatesOn = [toId(def.generatesOn)];
+            } else {
+                if (def.generatesOn.length === 0) {
+                    throw new Error(`[block-registry] decoration '${name}' (${modName}) has an empty generatesOn array`);
+                }
+                generatesOn = def.generatesOn.map(toId);
+            }
+        }
+
         this.decorations.push({
             ordinal: this.decorations.length,
             node: name,
@@ -246,7 +287,8 @@ export class BlockRegistryServer {
             spread: Math.max(1, Math.floor(num(def.spread, 8, 1, Infinity))),
             biomes: Array.isArray(def.biome)
                 ? def.biome.map(String)
-                : [String(def.biome ?? '*')]
+                : [String(def.biome ?? '*')],
+            generatesOn
         });
     }
 
@@ -291,6 +333,28 @@ export class BlockRegistryServer {
             parts.push({ name: partName, box });
         }
         return parts;
+    }
+
+    // Parse a textureAlign def: 'world' (default) or any combination of
+    // 'top', 'bottom', 'left', 'right'. Separators are optional, so
+    // 'bottom-right', 'bottom_right' and 'bottomright' all parse. Axes
+    // left unspecified default to 'left'/'top'.
+    #parseTextureAlign(name, modName, raw) {
+        if (raw === undefined || raw === null || raw === '') {
+            return { u: 'world', v: 'world' };
+        }
+        const s = String(raw).toLowerCase();
+        if (s.includes('world')) {
+            return { u: 'world', v: 'world' };
+        }
+        const u = s.includes('right') ? 'right'
+            : s.includes('left') ? 'left' : null;
+        const v = s.includes('top') ? 'top'
+            : s.includes('bottom') ? 'bottom' : null;
+        if (!u && !v) {
+            throw new Error(`[block-registry] block '${name}' (${modName}) has invalid textureAlign '${raw}' (expected 'world' or any combination of: top, bottom, left, right)`);
+        }
+        return { u: u ?? 'left', v: v ?? 'top' };
     }
 
     #textureLayer(url) {

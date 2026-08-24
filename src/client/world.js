@@ -104,7 +104,8 @@ export class World {
     }
 
     // Solid = any generated block flagged solid in the registry
-    // (fluids and non-solid blocks like plants are pass-through)
+    // (fluids and non-solid blocks like plants are pass-through).
+    // Physics-only: selection uses isSelectable().
     isSolid(x, y, z) {
         const cx = World.toChunkCoord(x);
         const cz = World.toChunkCoord(z);
@@ -112,6 +113,17 @@ export class World {
         if (!chunk) return false;
         const t = chunk.voxels.get(`${World.toLocal(x)},${y},${World.toLocal(z)}`);
         return t !== undefined && blocks.isSolid(t);
+    }
+
+    // Selectable = can be targeted by the selection raycast
+    // (independent of collision solidity)
+    isSelectable(x, y, z) {
+        const cx = World.toChunkCoord(x);
+        const cz = World.toChunkCoord(z);
+        const chunk = this.chunks.get(World.chunkKey(cx, cz));
+        if (!chunk) return false;
+        const t = chunk.voxels.get(`${World.toLocal(x)},${y},${World.toLocal(z)}`);
+        return t !== undefined && blocks.isSelectable(t);
     }
 
     set(x, y, z, blockType) {

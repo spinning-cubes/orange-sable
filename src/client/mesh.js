@@ -59,7 +59,9 @@ export function buildChunkMesh(world, chunk) {
 
         if (blocks.isPlant(blockType)) {
             emitPlantCross(cutout, cx, cy, cz,
-                blocks.faceLayer(blockType, 0));
+                blocks.faceLayer(blockType, 0),
+                world, gx, ly, gz,
+                blocks.ambientOcclusion(blockType));
             continue;
         }
 
@@ -90,7 +92,8 @@ export function buildChunkMesh(world, chunk) {
             if (nType !== -1 && (nType === blockType || !blocks.actsTransparent(nType))) continue;
 
             pushFace(target, world, face, gx, ly, gz, cx, cy, cz,
-                blocks.faceLayer(blockType, f), isWater);
+                blocks.faceLayer(blockType, f), isWater,
+                blocks.ambientOcclusion(blockType));
         }
     }
 
@@ -101,9 +104,11 @@ export function buildChunkMesh(world, chunk) {
     };
 }
 
-// Emit one quad (4 verts + indices) with per-corner AO. `face.corners`
-// entries are [x, y, z, u, v] offsets from the block centre; u/v are 0/1.
-function pushFace(group, world, face, gx, gy, gz, cx, cy, cz, textureOffset, lowerTop) {
+// Emit one quad (4 verts + indices) with optional per-corner AO.
+// `face.corners` entries are [x, y, z, u, v] offsets from the block
+// centre; u/v are UV fractions clamped into the padded tile.
+function pushFace(group, world, face, gx, gy, gz, cx, cy, cz, textureOffset,
+    lowerTop, useAO = true) {
     const aoLevels = [];
 
     for (let c = 0; c < 4; c++) {
@@ -111,21 +116,23 @@ function pushFace(group, world, face, gx, gy, gz, cx, cy, cz, textureOffset, low
         const dx = corner[0], dy = corner[1], dz = corner[2];
 
         let s1 = 0, s2 = 0, cornerBlock = 0;
-        if (face.dir[0] !== 0) {
-            const fnx = face.dir[0];
-            s1 = safeHas(world, gx + fnx, gy + dy, gz) ? 1 : 0;
-            s2 = safeHas(world, gx + fnx, gy, gz + dz) ? 1 : 0;
-            cornerBlock = safeHas(world, gx + fnx, gy + dy, gz + dz) ? 1 : 0;
-        } else if (face.dir[1] !== 0) {
-            const fny = face.dir[1];
-            s1 = safeHas(world, gx + dx, gy + fny, gz) ? 1 : 0;
-            s2 = safeHas(world, gx, gy + fny, gz + dz) ? 1 : 0;
-            cornerBlock = safeHas(world, gx + dx, gy + fny, gz + dz) ? 1 : 0;
-        } else {
-            const fnz = face.dir[2];
-            s1 = safeHas(world, gx + dx, gy, gz + fnz) ? 1 : 0;
-            s2 = safeHas(world, gx, gy + dy, gz + fnz) ? 1 : 0;
-            cornerBlock = safeHas(world, gx + dx, gy + dy, gz + fnz) ? 1 : 0;
+        if (useAO) {
+            if (face.dir[0] !== 0) {
+                const fnx = face.dir[0];
+                s1 = safeHas(world, gx + fnx, gy + dy, gz) ? 1 : 0;
+                s2 = safeHas(world, gx + fnx, gy, gz + dz) ? 1 : 0;
+                cornerBlock = safeHas(world, gx + fnx, gy + dy, gz + dz) ? 1 : 0;
+            } else if (face.dir[1] !== 0) {
+                const fny = face.dir[1];
+                s1 = safeHas(world, gx + dx, gy + fny, gz) ? 1 : 0;
+                s2 = safeHas(world, gx, gy + fny, gz + dz) ? 1 : 0;
+                cornerBlock = safeHas(world, gx + dx, gy + fny, gz + dz) ? 1 : 0;
+            } else {
+                const fnz = face.dir[2];
+                s1 = safeHas(world, gx + dx, gy, gz + fnz) ? 1 : 0;
+                s2 = safeHas(world, gx, gy + dy, gz + fnz) ? 1 : 0;
+                cornerBlock = safeHas(world, gx + dx, gy + dy, gz + fnz) ? 1 : 0;
+            }
         }
 
         const aoLevel = (s1 && s2) ? 3 : (s1 + s2 + cornerBlock);
@@ -170,27 +177,54 @@ function pushFace(group, world, face, gx, gy, gz, cx, cy, cz, textureOffset, low
 // Faces lying exactly on the voxel boundary are culled like cube faces;
 // interior faces always render.
 //
-// UVs keep the texel density of a full 1x1x1 block face: every face
-// samples a top-left anchored region sized to its own fractional extent
-// instead of stretching the tile to fit, as if the texture were painted
-// on the unit cube and the box cut out of it.
+// textureAlign picks how each face maps the tile:
+//   'world' (default) - UVs project from where the box sits inside a full
+//   block, as if the texture were painted on the unit cube and the box
+//   cut out of it (a lower-half slab samples the lower half of the tile).
+//   top/bottom/left/right combos - anchor the sampled region to that
+//   corner instead, keeping 1:1 texel density (no stretching).
 function emitBoxPart(group, world, gx, gy, gz, cx, cy, cz, blockType, box, partIndex) {
-    const x1 = box[0] * 2, y1 = box[1] * 2, z1 = box[2] * 2;
-    const x2 = box[3] * 2, y2 = box[4] * 2, z2 = box[5] * 2;
+    const lx1 = box[0], ly1 = box[1], lz1 = box[2];
+    const lx2 = box[3], ly2 = box[4], lz2 = box[5];
+    const x1 = lx1 * 2, y1 = ly1 * 2, z1 = lz1 * 2;
+    const x2 = lx2 * 2, y2 = ly2 * 2, z2 = lz2 * 2;
     if (x1 === x2 || y1 === y2 || z1 === z2) return;
 
-    const ex = box[3] - box[0];
-    const ey = box[4] - box[1];
-    const ez = box[5] - box[2];
+    const ex = lx2 - lx1;
+    const ey = ly2 - ly1;
+    const ez = lz2 - lz1;
+    const align = blocks.textureAlign(blockType);
+    const useAO = blocks.ambientOcclusion(blockType);
 
-    const faces = [
-        { dir: [ 0, 0, 1], edge: z2, max: true,  corners: [[x1,y1,z2, 0, ey],[x2,y1,z2, ex, ey],[x2,y2,z2, ex, 0],[x1,y2,z2, 0, 0]], norm: [0,0, 1] },
-        { dir: [ 0, 0,-1], edge: z1, max: false, corners: [[x2,y1,z1, 0, ey],[x1,y1,z1, ex, ey],[x1,y2,z1, ex, 0],[x2,y2,z1, 0, 0]], norm: [0,0,-1] },
-        { dir: [ 0, 1, 0], edge: y2, max: true,  corners: [[x1,y2,z2, 0, ez],[x2,y2,z2, ex, ez],[x2,y2,z1, ex, 0],[x1,y2,z1, 0, 0]], norm: [0, 1,0] },
-        { dir: [ 0,-1, 0], edge: y1, max: false, corners: [[x1,y1,z1, 0, ez],[x2,y1,z1, ex, ez],[x2,y1,z2, ex, 0],[x1,y1,z2, 0, 0]], norm: [0,-1,0] },
-        { dir: [ 1, 0, 0], edge: x2, max: true,  corners: [[x2,y1,z2, 0, ey],[x2,y1,z1, ez, ey],[x2,y2,z1, ez, 0],[x2,y2,z2, 0, 0]], norm: [ 1,0,0] },
-        { dir: [-1, 0, 0], edge: x1, max: false, corners: [[x1,y1,z1, 0, ey],[x1,y1,z2, ex, ey],[x1,y2,z2, ex, 0],[x1,y2,z1, 0, 0]], norm: [-1,0,0] }
-    ];
+    const uvRect = (uExt, vExt, uWorld, vWorld) => {
+        const u0 = align.u === 'left' ? 0
+            : align.u === 'right' ? 1 - uExt : uWorld;
+        const v0 = align.v === 'top' ? 0
+            : align.v === 'bottom' ? 1 - vExt : vWorld;
+        return [u0, u0 + uExt, v0, v0 + vExt];
+    };
+
+    let uv;
+    const faces = [];
+
+    uv = uvRect(ex, ey, lx1 + 0.5, 0.5 - ly2);
+    faces.push({ dir: [ 0, 0, 1], edge: z2, max: true,  norm: [0,0, 1],
+        corners: [[x1,y1,z2,uv[0],uv[3]],[x2,y1,z2,uv[1],uv[3]],[x2,y2,z2,uv[1],uv[2]],[x1,y2,z2,uv[0],uv[2]]] });
+    uv = uvRect(ex, ey, 0.5 - lx2, 0.5 - ly2);
+    faces.push({ dir: [ 0, 0,-1], edge: z1, max: false, norm: [0,0,-1],
+        corners: [[x2,y1,z1,uv[0],uv[3]],[x1,y1,z1,uv[1],uv[3]],[x1,y2,z1,uv[1],uv[2]],[x2,y2,z1,uv[0],uv[2]]] });
+    uv = uvRect(ex, ez, lx1 + 0.5, lz1 + 0.5);
+    faces.push({ dir: [ 0, 1, 0], edge: y2, max: true,  norm: [0, 1,0],
+        corners: [[x1,y2,z2,uv[0],uv[3]],[x2,y2,z2,uv[1],uv[3]],[x2,y2,z1,uv[1],uv[2]],[x1,y2,z1,uv[0],uv[2]]] });
+    uv = uvRect(ex, ez, lx1 + 0.5, 0.5 - lz2);
+    faces.push({ dir: [ 0,-1, 0], edge: y1, max: false, norm: [0,-1,0],
+        corners: [[x1,y1,z1,uv[0],uv[3]],[x2,y1,z1,uv[1],uv[3]],[x2,y1,z2,uv[1],uv[2]],[x1,y1,z2,uv[0],uv[2]]] });
+    uv = uvRect(ez, ey, 0.5 - lz2, 0.5 - ly2);
+    faces.push({ dir: [ 1, 0, 0], edge: x2, max: true,  norm: [ 1,0,0],
+        corners: [[x2,y1,z2,uv[0],uv[3]],[x2,y1,z1,uv[1],uv[3]],[x2,y2,z1,uv[1],uv[2]],[x2,y2,z2,uv[0],uv[2]]] });
+    uv = uvRect(ez, ey, lz1 + 0.5, 0.5 - ly2);
+    faces.push({ dir: [-1, 0, 0], edge: x1, max: false, norm: [-1,0,0],
+        corners: [[x1,y1,z1,uv[0],uv[3]],[x1,y1,z2,uv[1],uv[3]],[x1,y2,z2,uv[1],uv[2]],[x1,y2,z1,uv[0],uv[2]]] });
 
     for (let f = 0; f < faces.length; f++) {
         const face = faces[f];
@@ -205,15 +239,29 @@ function emitBoxPart(group, world, gx, gy, gz, cx, cy, cz, blockType, box, partI
         }
 
         pushFace(group, world, face, gx, gy, gz, cx, cy, cz,
-            blocks.faceLayer(blockType, f, partIndex), false);
+            blocks.faceLayer(blockType, f, partIndex), false, useAO);
     }
 }
 
 // Two crossed quads for a 'plant' renderType block, double-sided.
 // Each quad is emitted twice: front as-authored, then reversed-winding
 // with mirrored U, so the texture reads correctly from either side.
-function emitPlantCross(group, cx, cy, cz, layer) {
+// With ambientOcclusion enabled, corners darken based on the horizontal
+// neighbours around the plant cell.
+function emitPlantCross(group, cx, cy, cz, layer, world, gx, gy, gz, useAO) {
+    const AO = [1.0, 0.72, 0.48, 0.25];
     for (const quad of PLANT_QUADS) {
+        let factors = null;
+        if (useAO) {
+            factors = quad.map((c) => {
+                const dx = c[0] > 0 ? 1 : -1;
+                const dz = c[2] > 0 ? 1 : -1;
+                const s1 = safeHas(world, gx + dx, gy, gz) ? 1 : 0;
+                const s2 = safeHas(world, gx, gy, gz + dz) ? 1 : 0;
+                const cb = safeHas(world, gx + dx, gy, gz + dz) ? 1 : 0;
+                return AO[(s1 && s2) ? 3 : (s1 + s2 + cb)];
+            });
+        }
         for (let side = 0; side < 2; side++) {
             const back = side === 1;
             const order = back ? [3, 2, 1, 0] : [0, 1, 2, 3];
@@ -225,7 +273,7 @@ function emitPlantCross(group, cx, cy, cz, layer) {
                     (back ? 1 - c[3] : c[3]) ? 1 - PAD_UV : PAD_UV,
                     c[4] ? 1 - PAD_UV : PAD_UV,
                     0, 1, 0,
-                    1.0, layer
+                    factors ? factors[i] : 1.0, layer
                 );
             }
             group.indices.push(

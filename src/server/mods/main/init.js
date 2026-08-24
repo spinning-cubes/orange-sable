@@ -36,14 +36,36 @@ main.registerBlock({
     });
 });
 
+['glass'].forEach(function(block) {
+    main.registerBlock({
+        name: block,
+        description: block.charAt(0).toUpperCase() + block.slice(1),
+        isTransparent: true,
+        texture: function(face, x, y, z, world) {
+            return block;
+        }
+    });
+});
+
 main.registerBlock({
-    name: "test",
-    description: "Test Plant",
+    name: "grassplant",
+    description: "Grass Plant",
     renderType: "plant",
     isSolid: false,
     isTransparent: true,
     texture: function(face, x, y, z, world) {
-        return "test";
+        return "grassplant";
+    }
+});
+
+main.registerBlock({
+    name: "grassplant_sand",
+    description: "Sandy Grass Plant",
+    renderType: "plant",
+    isSolid: false,
+    isTransparent: true,
+    texture: function(face, x, y, z, world) {
+        return "grassplant_sand";
     }
 });
 
@@ -56,23 +78,6 @@ main.registerBlock({
     texture: function(face, x, y, z, world) {
         return "water";
     }
-});
-
-main.registerBlock({
-    name: "test_2",
-    description: "Test2",
-    renderType: "nodebox",
-    actsTransparent: true,
-    texture: function(face, x, y, z, world, part) {
-        return 'test';
-    },
-    nodebox: [
-        [
-            'part1', 
-            -0.25, -0.5, -0.25,
-            0.25, 0.0, 0.25
-        ]
-    ]
 });
 
 main.include('worldgen.js');
