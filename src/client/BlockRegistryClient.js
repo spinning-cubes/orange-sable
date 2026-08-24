@@ -35,19 +35,59 @@ export class BlockRegistryClient {
         return !!def && def.isTransparent;
     }
 
+    actsTransparent(id) {
+        const def = this.def(id);
+        return !!def && !!(def.actsTransparent ?? def.isTransparent);
+    }
+
     isFluid(id) {
         const def = this.def(id);
         return !!def && def.isFluid;
     }
 
+    isSolid(id) {
+        const def = this.def(id);
+        return !!def && def.isSolid !== false;
+    }
+
+    renderType(id) {
+        const def = this.def(id);
+        return (def && def.renderType) || 'node';
+    }
+
+    isPlant(id) {
+        return this.renderType(id) === 'plant';
+    }
+
+    transparentType(id) {
+        const def = this.def(id);
+        if (!def) return 'cutout';
+        if (def.transparentType) return def.transparentType;
+        return def.isFluid ? 'blend' : 'cutout';
+    }
+
     // Atlas layer for a block face. faceIndex follows mesh.js FACES order:
     // 2 = top (+y), 3 = bottom (-y), everything else is a side face.
-    faceLayer(id, faceIndex) {
+    // Nodebox blocks take a part index into def.nodebox for per-part layers.
+    faceLayer(id, faceIndex, partIndex) {
         const def = this.def(id);
         if (!def) return 0;
+        if (Array.isArray(def.nodebox)) {
+            const part = def.nodebox[partIndex];
+            if (part && part.textures) {
+                if (faceIndex === 2) return part.textures.top;
+                if (faceIndex === 3) return part.textures.bottom;
+                return part.textures.side;
+            }
+        }
         if (faceIndex === 2) return def.textures.top;
         if (faceIndex === 3) return def.textures.bottom;
         return def.textures.side;
+    }
+
+    nodeboxParts(id) {
+        const def = this.def(id);
+        return (def && Array.isArray(def.nodebox)) ? def.nodebox : null;
     }
 
     particleLayer(id) {

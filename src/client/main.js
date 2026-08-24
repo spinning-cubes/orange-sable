@@ -66,7 +66,8 @@ const voxelUniforms = {
     texture:    gl.getUniformLocation(voxelProgram, 'uTexture'),
     fogColor:   gl.getUniformLocation(voxelProgram, 'uFogColor'),
     fogNear:    gl.getUniformLocation(voxelProgram, 'uFogNear'),
-    fogFar:     gl.getUniformLocation(voxelProgram, 'uFogFar')
+    fogFar:     gl.getUniformLocation(voxelProgram, 'uFogFar'),
+    alphaTest:  gl.getUniformLocation(voxelProgram, 'uAlphaTest')
 };
 const glowAttribs = { position: gl.getAttribLocation(glowProgram, 'aPosition') };
 const glowUniforms = {
@@ -211,7 +212,8 @@ function setFov(value) {
     try { localStorage.setItem(FOV_KEY, String(fovDeg)); } catch { }
 }
 
-// Per-chunk GPU data: { vbo, ibo, indexCount, indexGL, wvbo, wibo, waterIndexCount, waterIndexGL }
+// Per-chunk GPU data: opaque {vbo,ibo}, cutout {cvbo,cibo} and blend
+// {bvbo,bibo} draw groups with their index counts/types.
 const chunkGPU = new Map();
 
 function uploadWorkerMesh(m) {
@@ -220,44 +222,38 @@ function uploadWorkerMesh(m) {
     if (!gpu) {
         gpu = {
             vbo: gl.createBuffer(), ibo: gl.createBuffer(), indexCount: 0, indexGL: INDEX_TYPE,
-            wvbo: gl.createBuffer(), wibo: gl.createBuffer(), waterIndexCount: 0, waterIndexGL: INDEX_TYPE
+            cvbo: gl.createBuffer(), cibo: gl.createBuffer(), cutoutIndexCount: 0, cutoutIndexGL: INDEX_TYPE,
+            bvbo: gl.createBuffer(), bibo: gl.createBuffer(), blendIndexCount: 0, blendIndexGL: INDEX_TYPE
         };
         chunkGPU.set(key, gpu);
     }
-    const useU32  = m.big && uintExt;
-    const indices = useU32 ? new Uint32Array(m.indices) : new Uint16Array(m.indices);
-    gl.bindBuffer(gl.ARRAY_BUFFER, gpu.vbo);
-    gl.bufferData(gl.ARRAY_BUFFER,
-        m.vertices.length > 0 ? m.vertices : new Float32Array(1),
-        gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gpu.ibo);
-    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,
-        indices.length > 0 ? indices : new Uint16Array(1),
-        gl.DYNAMIC_DRAW);
-    gpu.indexCount = m.indexCount;
-    gpu.indexGL = useU32 ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT;
-
-    const useU32W  = m.waterBig && uintExt;
-    const wIndices = useU32W ? new Uint32Array(m.waterIndices) : new Uint16Array(m.waterIndices);
-    gl.bindBuffer(gl.ARRAY_BUFFER, gpu.wvbo);
-    gl.bufferData(gl.ARRAY_BUFFER,
-        m.waterVertices.length > 0 ? m.waterVertices : new Float32Array(1),
-        gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gpu.wibo);
-    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,
-        wIndices.length > 0 ? wIndices : new Uint16Array(1),
-        gl.DYNAMIC_DRAW);
-    gpu.waterIndexCount = m.waterIndexCount;
-    gpu.waterIndexGL = useU32W ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT;
+    const groups = [
+        ['vbo', 'ibo', 'indexCount', 'indexGL', m.vertices, m.indices, m.indexCount, m.big],
+        ['cvbo', 'cibo', 'cutoutIndexCount', 'cutoutIndexGL', m.cutoutVertices, m.cutoutIndices, m.cutoutIndexCount, m.cutoutBig],
+        ['bvbo', 'bibo', 'blendIndexCount', 'blendIndexGL', m.blendVertices, m.blendIndices, m.blendIndexCount, m.blendBig]
+    ];
+    for (const [vboName, iboName, countName, typeName, vertices, rawIndices, indexCount, big] of groups) {
+        const useU32 = big && uintExt;
+        const indices = useU32 ? new Uint32Array(rawIndices) : new Uint16Array(rawIndices);
+        gl.bindBuffer(gl.ARRAY_BUFFER, gpu[vboName]);
+        gl.bufferData(gl.ARRAY_BUFFER,
+            vertices.length > 0 ? vertices : new Float32Array(1),
+            gl.DYNAMIC_DRAW);
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gpu[iboName]);
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,
+            indices.length > 0 ? indices : new Uint16Array(1),
+            gl.DYNAMIC_DRAW);
+        gpu[countName] = indexCount;
+        gpu[typeName] = useU32 ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT;
+    }
 }
 
 function deleteChunkGPU(key) {
     const gpu = chunkGPU.get(key);
     if (gpu) {
-        gl.deleteBuffer(gpu.vbo);
-        gl.deleteBuffer(gpu.ibo);
-        gl.deleteBuffer(gpu.wvbo);
-        gl.deleteBuffer(gpu.wibo);
+        for (const name of ['vbo', 'ibo', 'cvbo', 'cibo', 'bvbo', 'bibo']) {
+            gl.deleteBuffer(gpu[name]);
+        }
         chunkGPU.delete(key);
     }
 }
@@ -348,13 +344,16 @@ function packMeshArrays(vertices, indices) {
 }
 
 function uploadMesh(cx, cz, mesh) {
-    const opaque = packMeshArrays(mesh.vertices, mesh.indices);
-    const water  = packMeshArrays(mesh.waterVertices, mesh.waterIndices);
+    const opaque  = packMeshArrays(mesh.vertices, mesh.indices);
+    const cutout  = packMeshArrays(mesh.cutoutVertices, mesh.cutoutIndices);
+    const blend   = packMeshArrays(mesh.blendVertices, mesh.blendIndices);
     uploadWorkerMesh({
         cx, cz,
         ...opaque,
-        waterVertices: water.vertices, waterIndices: water.indices,
-        waterIndexCount: water.indexCount, waterBig: water.big
+        cutoutVertices: cutout.vertices, cutoutIndices: cutout.indices,
+        cutoutIndexCount: cutout.indexCount, cutoutBig: cutout.big,
+        blendVertices: blend.vertices, blendIndices: blend.indices,
+        blendIndexCount: blend.indexCount, blendBig: blend.big
     });
 }
 
@@ -815,7 +814,7 @@ function render(now) {
     const frustum = frustumPlanes(Mat4.multiply(projectionMat, viewMat));
     const visibleChunks = [];
     for (const [key, gpu] of chunkGPU) {
-        if (gpu.indexCount === 0 && !gpu.waterIndexCount) continue;
+        if (!gpu.indexCount && !gpu.cutoutIndexCount && !gpu.blendIndexCount) continue;
         const comma = key.indexOf(',');
         const ccx = parseInt(key.substring(0, comma));
         const ccz = parseInt(key.substring(comma + 1));
@@ -839,6 +838,7 @@ function render(now) {
     gl.uniform3f(voxelUniforms.fogColor, FOG_COLOR[0], FOG_COLOR[1], FOG_COLOR[2]);
     gl.uniform1f(voxelUniforms.fogNear, FOG_NEAR);
     gl.uniform1f(voxelUniforms.fogFar,  FOG_FAR);
+    gl.uniform1f(voxelUniforms.alphaTest, 0.0);
 
     const bindVoxelAttribs = () => {
         gl.vertexAttribPointer(voxelAttribs.position, 3, gl.FLOAT, false, FSIZE * 10, 0);
@@ -863,7 +863,20 @@ function render(now) {
         gl.drawElements(gl.TRIANGLES, gpu.indexCount, gpu.indexGL, 0);
     }
 
-    //  Water (blended pass over the opaque geometry).
+    //  Cutout transparents (plants, glass-style blocks).
+    //  Fully transparent texels are discarded in the shader; depth writes
+    //  stay on and no blending is involved, so this stays cheap.
+    gl.uniform1f(voxelUniforms.alphaTest, 0.5);
+    for (const gpu of visibleChunks) {
+        if (!gpu.cutoutIndexCount) continue;
+        gl.bindBuffer(gl.ARRAY_BUFFER, gpu.cvbo);
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gpu.cibo);
+        bindVoxelAttribs();
+        gl.drawElements(gl.TRIANGLES, gpu.cutoutIndexCount, gpu.cutoutIndexGL, 0);
+    }
+    gl.uniform1f(voxelUniforms.alphaTest, 0.0);
+
+    //  Blend transparents (water & other semi-transparent nodes).
     //  Depth writes stay off so translucent surfaces never occlude
     //  geometry drawn afterwards (selection glow, particles) - otherwise
     //  the selection box vanishes behind any water surface in front of it.
@@ -871,11 +884,11 @@ function render(now) {
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.depthMask(false);
     for (const gpu of visibleChunks) {
-        if (!gpu.waterIndexCount) continue;
-        gl.bindBuffer(gl.ARRAY_BUFFER, gpu.wvbo);
-        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gpu.wibo);
+        if (!gpu.blendIndexCount) continue;
+        gl.bindBuffer(gl.ARRAY_BUFFER, gpu.bvbo);
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gpu.bibo);
         bindVoxelAttribs();
-        gl.drawElements(gl.TRIANGLES, gpu.waterIndexCount, gpu.waterIndexGL, 0);
+        gl.drawElements(gl.TRIANGLES, gpu.blendIndexCount, gpu.blendIndexGL, 0);
     }
     gl.depthMask(true);
     gl.disable(gl.BLEND);

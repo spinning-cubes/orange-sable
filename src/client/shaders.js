@@ -35,10 +35,12 @@ export const VOXEL_FS = `
     uniform vec3 uFogColor;
     uniform float uFogNear;
     uniform float uFogFar;
+    uniform float uAlphaTest;
     void main() {
         // WebGL1 fallback: reconstruct atlas UV from tile-local coords + layer
         vec2 uv = vec2((vTexLayer + vTexCoord.x) / 8.0, vTexCoord.y);
         vec4 texColor = texture2D(uTexture, uv);
+        if (uAlphaTest > 0.0 && texColor.a < uAlphaTest) discard;
         vec3 norm = normalize(vNormal);
         vec3 anorm = abs(norm);
         float shade;
@@ -95,10 +97,12 @@ uniform highp sampler2DArray uTexture;
 uniform vec3 uFogColor;
 uniform float uFogNear;
 uniform float uFogFar;
+uniform float uAlphaTest;
 out vec4 fragColor;
 void main() {
     // Each tile lives on its own array layer - no atlas bleed possible
     vec4 texColor = texture(uTexture, vec3(vTexCoord, vTexLayer));
+    if (uAlphaTest > 0.0 && texColor.a < uAlphaTest) discard;
     vec3 norm = normalize(vNormal);
     vec3 anorm = abs(norm);
     float shade;

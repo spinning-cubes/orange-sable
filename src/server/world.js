@@ -56,7 +56,7 @@ export class ServerWorld extends BaseWorld {
         if (!chunk || !chunk.generated) return this.getHeight(gx, gz);
         for (let y = 20; y >= -1; y--) {
             const t = chunk.voxels.get(`${BaseWorld.toLocal(gx)},${y},${BaseWorld.toLocal(gz)}`);
-            if (t !== undefined && !blockRegistry.isFluid(t)) return y;
+            if (t !== undefined && blockRegistry.isSolid(t)) return y;
         }
         return -1;
     }
@@ -140,11 +140,11 @@ export class ServerWorld extends BaseWorld {
                     const y = surfaceY + 1;
                     if (y > MAX_Y) continue;
 
-                    // Ground must be real generated terrain that is not a
-                    // fluid, and the target cell must be free (skips water
-                    // columns, tree trunks and any other occupied spot).
+                    // Ground must be real generated solid terrain, and the
+                    // target cell must be free (skips water columns, tree
+                    // trunks and any other occupied spot).
                     const ground = chunk.voxels.get(`${lx},${surfaceY},${lz}`);
-                    if (ground === undefined || blockRegistry.isFluid(ground)) continue;
+                    if (ground === undefined || !blockRegistry.isSolid(ground)) continue;
                     if (chunk.has(lx, y, lz)) continue;
 
                     chunk.set(lx, y, lz, d.blockId);

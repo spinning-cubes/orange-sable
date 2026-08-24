@@ -53,7 +53,7 @@ export class World {
         if (!chunk || !chunk.generated) return 10;
         for (let y = 20; y >= -1; y--) {
             const t = chunk.voxels.get(`${World.toLocal(gx)},${y},${World.toLocal(gz)}`);
-            if (t !== undefined && !blocks.isFluid(t)) return y;
+            if (t !== undefined && blocks.isSolid(t)) return y;
         }
         return -1;
     }
@@ -103,14 +103,15 @@ export class World {
         return chunk.has(World.toLocal(x), y, World.toLocal(z));
     }
 
-    // Solid = any generated block except fluids (water is pass-through)
+    // Solid = any generated block flagged solid in the registry
+    // (fluids and non-solid blocks like plants are pass-through)
     isSolid(x, y, z) {
         const cx = World.toChunkCoord(x);
         const cz = World.toChunkCoord(z);
         const chunk = this.chunks.get(World.chunkKey(cx, cz));
         if (!chunk) return false;
         const t = chunk.voxels.get(`${World.toLocal(x)},${y},${World.toLocal(z)}`);
-        return t !== undefined && !blocks.isFluid(t);
+        return t !== undefined && blocks.isSolid(t);
     }
 
     set(x, y, z, blockType) {

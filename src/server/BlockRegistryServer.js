@@ -5,8 +5,21 @@
 //
 // Mods are written against a `main` global (see mods/main/init.js):
 //   main.setModNamespace = "<ns>"
-//   main.registerBlock({ name, description, isTransparent, isFluid,
-//                        texture(face, x, y, z, world) -> textureName })
+//   main.registerBlock({ name, description, isTransparent, isFluid, isSolid,
+//                        actsTransparent,
+//                        renderType: 'node' | 'plant' | 'nodebox',
+//                        transparentType: 'cutout' | 'blend',
+//                        nodebox: [ [id?, x1, y1, z1, x2, y2, z2], ... ],
+//                        texture(face, x, y, z, world, part) -> textureName })
+// renderType 'plant' draws two crossed quads and implies isTransparent.
+// renderType 'nodebox' draws arbitrary boxes per part; the texture
+// resolver receives the part id for per-part textures.
+// transparentType 'cutout' alpha-discards in the opaque pass; 'blend'
+// draws depth-sorted-last with real alpha blending (water-style).
+// actsTransparent (implied by isTransparent) only affects occlusion:
+// neighbours keep their faces visible against such blocks and they cast
+// no AO, while renderType/transparentType stay untouched.
+// isSolid defaults to true and is forced false for fluids.
 // The texture resolver is evaluated once per face here so the manifest can
 // stay plain JSON (static layer indices) instead of shipping code.
 // Discovered by Vite (dev + build rewrite this call into a static module
@@ -57,6 +70,11 @@ export class BlockRegistryServer {
         return !!def && def.isFluid;
     }
 
+    isSolid(id) {
+        const def = this.def(id);
+        return !!def && def.isSolid !== false;
+    }
+
     async loadMods() {
         const paths = Object.keys(this._modules).sort();
         for (const path of paths) {
@@ -68,7 +86,7 @@ export class BlockRegistryServer {
             await this.#loadMod(path, modName);
         }
         this.manifest = {
-            protocol: 1,
+            protocol: 4,
             blocks: this.blocks,
             textures: this.textureUrls
         };
@@ -136,12 +154,26 @@ export class BlockRegistryServer {
             throw new Error(`[block-registry] duplicate block name '${name}'`);
         }
 
-        const resolve = (face) => {
+        const RENDER_TYPES = ['node', 'plant', 'nodebox'];
+        const TRANSPARENT_TYPES = ['cutout', 'blend'];
+        const renderType = def.renderType ?? 'node';
+        if (!RENDER_TYPES.includes(renderType)) {
+            throw new Error(`[block-registry] block '${name}' has invalid renderType '${renderType}' (expected one of: ${RENDER_TYPES.join(', ')})`);
+        }
+        const transparentType = def.transparentType ?? (def.isFluid ? 'blend' : 'cutout');
+        if (!TRANSPARENT_TYPES.includes(transparentType)) {
+            throw new Error(`[block-registry] block '${name}' has invalid transparentType '${transparentType}' (expected one of: ${TRANSPARENT_TYPES.join(', ')})`);
+        }
+        const nodebox = renderType === 'nodebox'
+            ? this.#normalizeNodebox(name, modName, def.nodebox)
+            : null;
+
+        const resolve = (face, part) => {
             let tex;
             try {
-                tex = def.texture(face, 0, 0, 0, null);
+                tex = def.texture(face, 0, 0, 0, null, part ?? null);
             } catch (err) {
-                throw new Error(`[block-registry] texture resolver for '${name}' failed on face '${face}': ${err.message}`);
+                throw new Error(`[block-registry] texture resolver for '${name}' failed on face '${face}'${part ? ` (part '${part}')` : ''}: ${err.message}`);
             }
             if (typeof tex !== 'string' || !tex) {
                 throw new Error(`[block-registry] texture resolver for '${name}' returned no texture name on face '${face}'`);
@@ -154,8 +186,12 @@ export class BlockRegistryServer {
             id: this.blocks.length,
             name,
             description: def.description || def.name,
-            isTransparent: !!def.isTransparent,
+            isTransparent: !!def.isTransparent || renderType === 'plant',
+            actsTransparent: !!def.isTransparent || !!def.actsTransparent,
             isFluid: !!def.isFluid,
+            isSolid: def.isFluid ? false : def.isSolid ?? true,
+            renderType,
+            transparentType,
             textures: {
                 top: resolve('top'),
                 bottom: resolve('bottom'),
@@ -163,6 +199,18 @@ export class BlockRegistryServer {
             },
             particle: side
         };
+
+        if (nodebox) {
+            entry.nodebox = nodebox.map((p) => ({
+                name: p.name,
+                box: p.box,
+                textures: {
+                    top: resolve('top', p.name),
+                    bottom: resolve('bottom', p.name),
+                    side: resolve('side', p.name)
+                }
+            }));
+        }
 
         entry.particle = entry.textures.side;
         this._byName.set(name, entry);
@@ -200,6 +248,49 @@ export class BlockRegistryServer {
                 ? def.biome.map(String)
                 : [String(def.biome ?? '*')]
         });
+    }
+
+    // Validate + normalize a renderType 'nodebox' definition. Each part is
+    // [x1, y1, z1, x2, y2, z2] in -0.5..0.5 block-local units, optionally
+    // prefixed with a string part id. Unnamed parts get generated ids;
+    // explicit duplicates are rejected.
+    #normalizeNodebox(name, modName, raw) {
+        if (!Array.isArray(raw) || raw.length === 0) {
+            throw new Error(`[block-registry] nodebox block '${name}' (${modName}) needs a non-empty nodebox array`);
+        }
+        const parts = [];
+        const taken = new Set();
+        for (let i = 0; i < raw.length; i++) {
+            const p = raw[i];
+            if (!Array.isArray(p)) {
+                throw new Error(`[block-registry] nodebox part ${i} of '${name}' is not an array`);
+            }
+            let partName = null;
+            let nums = p;
+            if (typeof p[0] === 'string') {
+                partName = p[0];
+                nums = p.slice(1);
+            }
+            if (nums.length !== 6 || !nums.every((n) => Number.isFinite(Number(n)))) {
+                throw new Error(`[block-registry] nodebox part '${partName ?? i}' of '${name}' needs 6 numbers (x1, y1, z1, x2, y2, z2)`);
+            }
+            const [x1, y1, z1, x2, y2, z2] = nums.map(Number);
+            const box = [
+                Math.min(x1, x2), Math.min(y1, y2), Math.min(z1, z2),
+                Math.max(x1, x2), Math.max(y1, y2), Math.max(z1, z2)
+            ];
+            if (!partName) {
+                let n = 1;
+                while (taken.has(`part${n}`)) n++;
+                partName = `part${n}`;
+            }
+            if (taken.has(partName)) {
+                throw new Error(`[block-registry] duplicate nodebox part name '${partName}' in '${name}'`);
+            }
+            taken.add(partName);
+            parts.push({ name: partName, box });
+        }
+        return parts;
     }
 
     #textureLayer(url) {
