@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OrangeSable v1.0</title>
+    <link rel="icon" type="image/png" href="/src/client/page/icon/favicon-96x96.png" sizes="96x96"/>
+    <link rel="icon" type="image/svg+xml" href="/src/client/page/icon/favicon.svg"/>
+    <link rel="shortcut icon" href="/src/client/page/icon/favicon.ico"/>
+    <link rel="apple-touch-icon" sizes="180x180" href="/src/client/page/icon/apple-touch-icon.png"/>
+    <link rel="manifest" href="/src/client/page/icon/site.webmanifest"/>
+    <script>
+        (function injectLogger() {
+            const globalObj = typeof window !== 'undefined' ? window : global;
+            if (globalObj.console.__isMinecraftified) return;
+
+            globalObj.mcLogHistory = [];
+            const MAX_LOGS = 20;
+
+            const original = {
+                log: globalObj.console.log,
+                info: globalObj.console.info,
+                warn: globalObj.console.warn,
+                error: globalObj.console.error
+            };
+
+            globalObj.originalConsole = original;
+
+            const colors = {
+                INFO: 'color: white; font-weight: normal !important; text-decoration: none;',
+                WARN: 'color: #FFAA00; font-weight: normal !important;',
+                ERROR: 'color: #FF5555; font-weight: normal !important;'
+            };
+
+            const getCallerFile = () => {
+                try {
+                    const stack = new Error().stack.split('\n');
+                    // Filter out all internal logger helper lines
+                    const callerLine = stack.find(line => 
+                        line.includes('http') && 
+                        !line.includes('getCallerFile') && 
+                        !line.includes('formatAndHideLink') && 
+                        !line.includes('globalObj.console') &&
+                        !line.includes('injectLogger')
+                    );
+                    if (!callerLine) return "Client";
+
+                    // Regex matches the filename (ignoring .js extension if you want, or keeping it), line number, and column number
+                    const match = callerLine.match(/\/([^\/\s?]+?)(?:\.js)?:\s*(\d+):\s*(\d+)/) || callerLine.match(/\/([^\/\s?]+?)(?:\.js)?:(\d+)/);
+                    if (match) {
+                        const filename = match[1];
+                        const line = match[2];
+                        const col = match[3] || '0';
+                        return `${filename}:${line}:${col}`;
+                    }
+                    return "Client";
+                } catch (e) { return "Server"; }
+            };
+
+            const formatAndHideLink = (isFake, fileLoc2, level, args) => {
+                const time = new Date().toTimeString().split(' ')[0];
+                const fileLoc = isFake ? fileLoc2 : getCallerFile();
+                const tag = `[${time}] [${fileLoc}/${level.toUpperCase()}]:`;
+                
+                const messageString = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : arg).join(' ');
+                globalObj.mcLogHistory.push(`${tag} ${messageString}`);
+                if (globalObj.mcLogHistory.length > MAX_LOGS) globalObj.mcLogHistory.shift();
+                console.groupCollapsed(`%c${tag} ${messageString}`, colors[level.toUpperCase()] || colors.INFO);
+                original[level](...args);
+                
+                // Clean up the manual stack trace output
+                const trace = new Error();
+                const cleanStack = trace.stack.split('\n')
+                    .filter(line => 
+                        !line.includes('formatAndHideLink') && 
+                        !line.includes('globalObj.console') &&
+                        !line.includes('injectGlobalMCLogger') &&
+                        !line.includes('Error') // Removes the initial 'Error' string line
+                    )
+                    .join('\n');
+
+                original.log("Trace:\n", cleanStack);
+                
+                if (performance.memory) {
+                    original.log("Memory Usage (at time of logging):", `${Math.round(performance.memory.usedJSHeapSize / 1048576)} MB`);
+                }
+                console.groupEnd();
+            };
+
+            globalObj.console.log = (...args) => formatAndHideLink(false, null, 'info', args);
+            globalObj.console.info = (...args) => formatAndHideLink(false, null, 'info', args);
+            globalObj.console.warn = (...args) => formatAndHideLink(false, null, 'warn', args);
+            globalObj.console.error = (...args) => formatAndHideLink(false, null, 'error', args);
+            globalObj.console.fakeLog = (logL, ...args) => formatAndHideLink(true, logL, 'info', args);
+            globalObj.console.fakeError = (logL, ...args) => formatAndHideLink(true, logL, 'error', args);
+            globalObj.console.fakeWarn = (logL, ...args) => formatAndHideLink(true, logL, 'warn', args);
+
+            globalObj.console.__isLoggerOn = true;
+        })();
+    </script>
+    <style>
+        * {
+            outline: none;
+            margin: 0; padding: 0; box-sizing: border-box;
+        }
+        html, body {
+            width: 100%; height: 100%; overflow: hidden;
+            background-color: #6dbff2; user-select: none;
+        }
+        canvas { width: 100vw; height: 100vh; display: block;}
+        #hud {
+            position: absolute; top: 12px; left: 12px;
+            color: #ddd; font-family: monospace; font-size: 13px;
+            background: rgba(0,0,0,0.45); padding: 8px 12px;
+            border-radius: 6px; pointer-events: none; line-height: 1.5;
+        }
+        #crosshair {
+            position: absolute; top: 50%; left: 50%;
+            width: 18px; height: 18px;
+            transform: translate(-50%, -50%);
+            pointer-events: none; opacity: 0.7;
+        }
+        #crosshair::before, #crosshair::after {
+            content: ''; position: absolute; background: #fff;
+        }
+        #crosshair::before { left: 50%; top: 0; width: 2px; height: 100%; transform: translateX(-50%); }
+        #crosshair::after  { top: 50%; left: 0; height: 2px; width: 100%; transform: translateY(-50%); }
+
+        .formspec_ast-base>div {
+            position: absolute;
+            background-color: #343434;
+            border: 1px solid #0D0D0D;
+            border-radius: 3px;
+            overflow: hidden;
+            image-rendering: optimizeSpeed;
+        }
+
+        .formspec_ast-base>div.grid {
+            background: url("grid.png");
+        }
+
+        .formspec_ast-base>div,
+        .formspec_ast-base>div input,
+        .formspec_ast-base>div textarea,
+        .formspec_ast-base>div select {
+            font-family: Arimo, sans-serif;
+            color: #FFFFFF;
+            font-size: inherit;
+        }
+
+        .formspec_ast-base>div>* {
+            position: absolute;
+            font-size: 0.34em;
+            display: block;
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            user-select: none;
+            padding: 0;
+            text-shadow: 1px 1px black;
+            white-space: pre;
+        }
+
+        .formspec_ast-base img {
+            -webkit-user-drag: none;
+            -moz-user-drag: none;
+            user-drag: none;
+        }
+
+        .formspec_ast-base .formspec_ast-clickable:active {
+            transform: translate(1px, 1px);
+        }
+
+        .formspec_ast-base .formspec_ast-label {
+            margin-top: -0.6em;
+        }
+
+        .formspec_ast-base .formspec_ast-vertlabel {
+            margin-left: -0.3em;
+            line-height: 1;
+        }
+
+        .formspec_ast-base .formspec_ast-box {
+            background-color: #f002;
+        }
+
+        .formspec_ast-base .formspec_ast-button,
+        .formspec_ast-base .formspec_ast-button_exit,
+        .formspec_ast-base .formspec_ast-image_button[data-drawborder="true"],
+        .formspec_ast-base .formspec_ast-image_button_exit[data-drawborder="true"],
+        .formspec_ast-base .formspec_ast-dropdown>div {
+            box-sizing: border-box;
+            border: 1px solid #000;
+            background: #414141;
+            background: linear-gradient(180deg, #535353 0%, #2E2E2E 100%);
+            text-align: center;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            cursor: default;
+        }
+
+        .formspec_ast-base .formspec_ast-button:hover,
+        .formspec_ast-base .formspec_ast-button_exit:hover,
+        .formspec_ast-base .formspec_ast-image_button[data-drawborder="true"]:hover,
+        .formspec_ast-base .formspec_ast-image_button_exit[data-drawborder="true"]:hover,
+        .formspec_ast-base .formspec_ast-dropdown>div:hover {
+            background: linear-gradient(180deg, #656565 0%, #383838 100%);
+        }
+
+        .formspec_ast-base .formspec_ast-button:active,
+        .formspec_ast-base .formspec_ast-button_exit:active,
+        .formspec_ast-base .formspec_ast-image_button[data-drawborder="true"]:active,
+        .formspec_ast-base .formspec_ast-image_button_exit[data-drawborder="true"]:active,
+        .formspec_ast-base .formspec_ast-dropdown>div:active {
+            background: linear-gradient(180deg, #464646 0%, #272727 100%);
+        }
+
+        .formspec_ast-base .formspec_ast-image_button[data-drawborder="false"],
+        .formspec_ast-base .formspec_ast-image_button_exit[data-drawborder="false"] {
+            overflow: hidden;
+            background: none;
+            border: none;
+        }
+
+        .formspec_ast-base .formspec_ast-image_button img,
+        .formspec_ast-base .formspec_ast-image_button_exit img {
+            width: 100%;
+            height: 100%;
+            cursor: default;
+        }
+
+        .formspec_ast-base .formspec_ast-image_button span,
+        .formspec_ast-base .formspec_ast-image_button_exit span {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            cursor: default;
+        }
+
+        .formspec_ast-base .formspec_ast-field span,
+        .formspec_ast-base .formspec_ast-pwdfield span,
+        .formspec_ast-base .formspec_ast-textarea span {
+            position: absolute;
+            transform: translateY(-100%);
+        }
+
+        .formspec_ast-base .formspec_ast-field input,
+        .formspec_ast-base .formspec_ast-field textarea,
+        .formspec_ast-base .formspec_ast-pwdfield input,
+        .formspec_ast-base .formspec_ast-pwdfield textarea,
+        .formspec_ast-base .formspec_ast-textarea input,
+        .formspec_ast-base .formspec_ast-textarea textarea {
+            width: 100%;
+            height: 100%;
+            padding-left: 2px;
+            padding-right: 2px;
+            box-sizing: border-box;
+            border: 1px solid #000;
+            background: #FFFFFF65;
+            color: white;
+            text-shadow: 1px 1px black;
+            font-size: 1em;
+        }
+
+        .formspec_ast-base .formspec_ast-field input::selection,
+        .formspec_ast-base .formspec_ast-field textarea::selection,
+        .formspec_ast-base .formspec_ast-pwdfield input::selection,
+        .formspec_ast-base .formspec_ast-pwdfield textarea::selection,
+        .formspec_ast-base .formspec_ast-textarea input::selection,
+        .formspec_ast-base .formspec_ast-textarea textarea::selection {
+            background: #608631;
+        }
+
+        .formspec_ast-base .formspec_ast-field textarea,
+        .formspec_ast-base .formspec_ast-pwdfield textarea,
+        .formspec_ast-base .formspec_ast-textarea textarea {
+            resize: none;
+        }
+
+        .formspec_ast-base .formspec_ast-textarea[data-formspec_ast-name=""] textarea {
+            border-color: transparent;
+            background: transparent;
+        }
+
+        .formspec_ast-base .formspec_ast-checkbox {
+            margin-top: -0.6em;
+        }
+
+        .formspec_ast-base .formspec_ast-checkbox>div {
+            width: 1.2em;
+            height: 1.2em;
+            margin-right: 0.3em;
+            box-sizing: border-box;
+            border: 1px solid #000;
+            background: #848484;
+            display: inline-block;
+            vertical-align: bottom;
+        }
+
+        .formspec_ast-base .formspec_ast-checkbox:active>div {
+            background-color: #608631;
+        }
+
+        .formspec_ast-base .formspec_ast-checkbox[data-checked="true"]>div::before {
+            position: absolute;
+            content: '✓';
+            width: 1.2em;
+            margin-top: -0.05em;
+            color: #000;
+            text-shadow: none;
+            text-align: center;
+        }
+
+        .formspec_ast-base .formspec_ast-list {
+            font-size: inherit;
+            overflow: hidden;
+            border-collapse: collapse;
+        }
+
+        .formspec_ast-base .formspec_ast-list td {
+            width: 1em;
+            height: 1em;
+            background: #00000065;
+            padding: 0;
+            border: 0.25em solid #343434;
+        }
+
+        .formspec_ast-base.is-hud .formspec_ast-list td {
+            border: none;
+            background: rgba(0, 0, 0, 0.35);
+        }
+
+        .formspec_ast-base .formspec_ast-list td:first-child {
+            border-left: 0;
+        }
+
+        .formspec_ast-base .formspec_ast-list td:last-child {
+            border-right: 0;
+        }
+
+        .formspec_ast-base .formspec_ast-list td:hover {
+            background-color: #FFFFFF30;
+        }
+
+        .formspec_ast-base .formspec_ast-list tr:first-child td {
+            border-top: 0;
+        }
+
+        .formspec_ast-base .formspec_ast-list tr:last-child td {
+            border-bottom: 0;
+        }
+
+        .formspec_ast-base .formspec_ast-textlist {
+            border: 1px solid #1E1E1E;
+            background: #1E1E1E;
+            box-sizing: border-box;
+            overflow-x: hidden;
+            overflow-y: auto;
+            font-size: 1em;
+        }
+
+        .formspec_ast-base .formspec_ast-textlist>div {
+            font-size: 0.34em;
+            padding: 2px;
+            padding-left: 5px;
+            padding-right: 5px;
+        }
+
+        .formspec_ast-base .formspec_ast-dropdown {
+            border: 2px solid #1E1E1E;
+            box-sizing: border-box;
+        }
+
+        .formspec_ast-base .formspec_ast-dropdown select {
+            border: none;
+            border-radius: 0;
+            background: #1E1E1E;
+            width: 100%;
+            height: 100%;
+            -moz-appearance: none;
+            -webkit-appearance: none;
+            appearance: none;
+            outline: none;
+        }
+
+        .formspec_ast-base .formspec_ast-dropdown select:-moz-focusring {
+            color: transparent;
+            text-shadow: 0 0 0 #fff;
+        }
+
+        .formspec_ast-base .formspec_ast-dropdown select:focus {
+            background: #467832;
+        }
+
+        .formspec_ast-base .formspec_ast-dropdown select option {
+            background: #1E1E1E;
+        }
+
+        .formspec_ast-base .formspec_ast-dropdown select option:hover, .formspec_ast-base .formspec_ast-dropdown select option:focus {
+            background: #467832;
+        }
+
+        .formspec_ast-base .formspec_ast-dropdown.formspec_ast-clickable select {
+            pointer-events: none;
+        }
+
+        .formspec_ast-base .formspec_ast-dropdown>div {
+            position: absolute;
+            top: 0;
+            right: 0;
+            width: 15px;
+            height: 100%;
+            pointer-events: none;
+        }
+
+        .formspec_ast-base .formspec_ast-dropdown>div>div {
+            background: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAcAAAAECAMAAAB1GNVPAAAAElBMVEU+Pj4/Pz9AQEAVFRUWFhb///+2UyocAAAAA3RSTlMAAAD6dsTeAAAAHUlEQVR42mNggQAGJjDFxMDIyMzMzMjIAATMQAwABbgARWfCNlIAAAAASUVORK5CYII=");
+            width: 7px;
+            height: 4px;
+        }
+
+        #formspec_ast-properties {
+            position: fixed;
+            top: 0;
+            right: 0;
+            height: 100%;
+            overflow-y: auto;
+            padding: 10px;
+        }
+
+        #formspec_ast-new {
+            position: fixed;
+            top: 0;
+            left: 0;
+            height: 100%;
+            overflow-y: auto;
+            padding: 10px;
+        }
+
+        .formspec_ast-base .formspec_ast-dropdown.formspec_ast-clickable select {
+            pointer-events: auto !important;
+        }
+
+        .formspec_ast-base div textarea {
+            user-select: text !important;
+        }
+
+        .formspec_ast-base div * {
+            outline: none;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        * {
+            scrollbar-color: #afafaf transparent;
+        }
+
+        .formspec_ast-list table tr td img {
+            width: 100% !important;
+            height: 100% !important;
+            max-width: 100% !important;
+            max-height: 100% !important;
+            object-fit: contain !important;
+            image-rendering: pixelated !important;
+            display: block !important;
+            box-sizing: border-box !important;
+        }
+
+        .formspec_ast-list table {
+            width: 100%;
+            height: 100%;
+            border-collapse: collapse;
+        }
+
+        .formspec_ast-list td {
+            width: 1.25em;
+            height: 1.25em;
+            overflow: hidden;
+            position: relative;
+            vertical-align: middle;
+            text-align: center;
+        }
+
+        .formspec_ast-base.is-hud {
+            display: flex !important;
+            justify-content: center !important;
+            align-items: flex-end !important;
+            padding-bottom: 20px !important;
+            pointer-events: none !important;
+        }
+
+        .formspec_ast-base.is-hud > div {
+            position: relative !important;
+            top: auto !important;
+            left: auto !important;
+        }
+
+        .formspec_ast-base.is-hud .formspec_ast-clickable {
+            pointer-events: auto !important;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="glCanvas"></canvas>
+    <div id="crosshair"></div>
+    <script type="module" src="/gamestart.js"></script>
+</body>
+</html>
