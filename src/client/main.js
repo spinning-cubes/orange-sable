@@ -11,8 +11,9 @@ import { buildUnitCubeMesh, buildChunkMesh } from './mesh.js';
 import { World, Chunk, CHUNK_SIZE } from './world.js';
 import { voxelRaycast } from './raycast.js';
 import { createCamera, cameraForward, updateCameraFov } from './camera.js';
-import { createPlayer, updatePlayer, playerEyePos, blockOverlapsPlayer, placeOnTerrain } from './player.js';
+import { createPlayer, updatePlayer, playerEyePos, blockOverlapsPlayer, placeOnTerrain, clearKeys } from './player.js';
 import { createParticleSystem, spawnBreakParticles, updateParticles, buildParticleBuffer } from './particles.js';
+import { frustumPlanes, aabbIntersectsFrustum } from './frustum.js';
 import { IsomorphicWebSocket } from '../shared/IsomorphicWebSocket.js';
 import { netStats } from './netstats.js';
 import DebugOverlay from './gui/DebugOverlay.js';
@@ -111,13 +112,15 @@ function loadSavedNumber(key, fallback, min, max) {
     return fallback;
 }
 
-let screen = null;
+let screen = null;  // modal screen (menus, dialogs) - blocks game input
+let hud = null;     // persistent HUD layer - stays up behind every screen
 
 // Screens resolve their exit through this host so main's active-screen
 // pointer always tracks what is really on display.
 const screenHost = {
     onScreenExit(closed) {
         screen = closed.lastScreen || null;
+        updateMenuDim();
     }
 };
 
@@ -127,6 +130,41 @@ function showScreen(screenClass, ...args) {
     }
     screen = new screenClass(screenHost, screen ?? null, ...args);
     screen.render();
+    updateMenuDim();
+}
+
+// Close the active modal without touching the persistent HUD.
+function closeScreen() {
+    if (!screen) return;
+    screen.view.delete();
+    screen = null;
+    updateMenuDim();
+}
+
+// HUD screens live outside the modal stack: they are never closed by
+// showScreen() and keep rendering while menus are open.
+function showHud(screenClass, ...args) {
+    if (hud) {
+        hud.view.delete();
+    }
+    hud = new screenClass(screenHost, null, ...args);
+    hud.render();
+}
+
+// Dim layer shown while a modal is open. Sits above the game canvas and
+// the debug HUD (z 99990) but below menu panels (z 99999).
+const menuDim = document.createElement('div');
+menuDim.style.position = 'fixed';
+menuDim.style.inset = '0';
+menuDim.style.background = '#000';
+menuDim.style.opacity = '0.2';
+menuDim.style.pointerEvents = 'none';
+menuDim.style.zIndex = '99995';
+menuDim.style.display = 'none';
+document.body.appendChild(menuDim);
+
+function updateMenuDim() {
+    menuDim.style.display = screen ? 'block' : 'none';
 }
 
 // Calculate fog distance based on render distance
@@ -234,18 +272,22 @@ const player = createPlayer();
 applyFov();
 
 // Debug HUD needs the live player reference for the X/Y/Z readout
-showScreen(DebugOverlay, { player });
+showHud(DebugOverlay, { player });
 
 //  Pause menu on pointer-lock loss (Esc, alt-tab, ...) 
 function openIngameMenu() {
     // Already paused (menu or its settings open) - nothing to do
     if (screen instanceof IngameMenu || screen instanceof SettingsScreen) return;
 
+    // The menu takes input focus - release whatever was held so movement
+    // doesn't continue (or stick) after resume.
+    resetInput();
+
     showScreen(IngameMenu, {
         onResume: () => {
-            // Restore the debug HUD and grab the mouse again
-            showScreen(DebugOverlay, { player });
-            canvas.requestPointerLock();
+            // Drop the modal first so the lock policy sees gameplay state
+            closeScreen();
+            requestGameLock();
         },
         onSettings: () => showScreen(SettingsScreen, {
             renderDistance,
@@ -258,9 +300,24 @@ function openIngameMenu() {
     });
 }
 
+// Pointer-lock policy: the game may only grab the mouse while no modal
+// screen is open. Every acquisition path funnels through here.
+function requestGameLock() {
+    if (screen) return;
+    canvas.requestPointerLock();
+}
+
 let pointerWasLocked = false;
 document.addEventListener('pointerlockchange', () => {
     const locked = document.pointerLockElement === canvas;
+
+    // Hard enforcement: if a lock slips through (stray call, stale
+    // listener, browser quirk) while a menu owns input, kill it again.
+    if (locked && screen) {
+        document.exitPointerLock();
+        return;
+    }
+
     if (pointerWasLocked && !locked) openIngameMenu();
     pointerWasLocked = locked;
 });
@@ -269,6 +326,13 @@ document.addEventListener('pointerlockerror', () => {
     // A relock request was rejected (browsers enforce a cooldown right
     // after Esc) - drop back into the menu so the game stays paused.
     openIngameMenu();
+});
+
+// Losing window focus (alt-tab, OS overlay) can swallow keyup/mouseup
+// events - release everything so no input stays stuck down.
+window.addEventListener('blur', () => resetInput());
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) resetInput();
 });
 
 // Mesh building runs on the main thread now (the integrated server worker
@@ -528,6 +592,11 @@ gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, particles.indices.byteLength, gl.DYNAMIC_
 
 const REACH = 16;
 
+// Vertical extent of every chunk's world AABB for frustum culling -
+// spans full generation range (grid -1..31 = world -3..63) plus margin.
+const CHUNK_MIN_Y = -4;
+const CHUNK_MAX_Y = 64;
+
 //  Break / Place (chunk-aware) 
 function tryBreak() {
     const eye = playerEyePos(player);
@@ -558,12 +627,61 @@ function tryPlace() {
     sendSetBlock(px, py, pz, blocks.defaultId);
 }
 
+//  Break / Place hold-to-repeat 
+// First click fires instantly; keeping the button down repeats the action
+// after a short delay so a stray long press can't chew through blocks.
+const HOLD_REPEAT_DELAY = 0.3;  // s before repeats begin
+const HOLD_REPEAT_RATE  = 0.25; // s between repeats
+
+const mouseHeld = { break: false, place: false };
+let holdCooldown = 0;
+
 canvas.addEventListener('mousedown', (e) => {
     if (!camera.locked) return;
-    if (e.button === 0) tryBreak();
-    else if (e.button === 2) tryPlace();
+    if (e.button === 0) {
+        tryBreak();
+        mouseHeld.break = true;
+        mouseHeld.place = false;
+        holdCooldown = HOLD_REPEAT_DELAY;
+    } else if (e.button === 2) {
+        tryPlace();
+        mouseHeld.place = true;
+        mouseHeld.break = false;
+        holdCooldown = HOLD_REPEAT_DELAY;
+    }
+});
+window.addEventListener('mouseup', (e) => {
+    if (e.button === 0) mouseHeld.break = false;
+    else if (e.button === 2) mouseHeld.place = false;
 });
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+// Release every held input (keys + mouse buttons). Used whenever the game
+// loses input focus (menu open, window blur) so nothing stays latched.
+function resetInput() {
+    clearKeys(player);
+    mouseHeld.break = false;
+    mouseHeld.place = false;
+    holdCooldown = 0;
+}
+
+// Called each frame from the render loop.
+function updateHoldActions(dt) {
+    const active = camera.locked && !screen && (mouseHeld.break || mouseHeld.place);
+    if (!active) {
+        holdCooldown = 0;
+        return;
+    }
+    holdCooldown -= dt;
+    if (holdCooldown > 0) return;
+    if (mouseHeld.break) tryBreak();
+    else if (mouseHeld.place) tryPlace();
+    holdCooldown = HOLD_REPEAT_RATE;
+}
+
+// Clicking the canvas grabs the mouse - but never while a modal screen
+// owns input, otherwise the menu could be bypassed by a stray click.
+canvas.addEventListener('click', () => requestGameLock());
 
 function resize() {
     // Render at native device resolution: upscaling a CSS-pixel buffer on
@@ -670,8 +788,11 @@ function render(now) {
     updateChunkLoading();
     processMeshQueue();
     updatePlayerState(dt);
-    if (playerChunksReady()) updatePlayer(player, camera, world, dt);
+    // Modal screens (pause menu, settings) freeze player simulation -
+    // keys were cleared on open, and held inputs must not accumulate.
+    if (!screen && playerChunksReady()) updatePlayer(player, camera, world, dt);
     updateParticles(particles, dt);
+    updateHoldActions(dt);
 
     // Sky / fog clear color
     gl.clearColor(FOG_COLOR[0], FOG_COLOR[1], FOG_COLOR[2], 1.0);
@@ -687,6 +808,25 @@ function render(now) {
     const lookY = eye[1] + forward[1];
     const lookZ = eye[2] + forward[2];
     const viewMat = Mat4.lookAt(eye, [lookX, lookY, lookZ], [0, 1, 0]);
+
+    //  Frustum culling: skip chunks outside the view (behind the player,
+    //  above/below or beside the screen). Chunk world AABBs are derived
+    //  from the chunk key; Y is a fixed range spanning all generation.
+    const frustum = frustumPlanes(Mat4.multiply(projectionMat, viewMat));
+    const visibleChunks = [];
+    for (const [key, gpu] of chunkGPU) {
+        if (gpu.indexCount === 0 && !gpu.waterIndexCount) continue;
+        const comma = key.indexOf(',');
+        const ccx = parseInt(key.substring(0, comma));
+        const ccz = parseInt(key.substring(comma + 1));
+        const baseX = ccx * CHUNK_SIZE * 2;
+        const baseZ = ccz * CHUNK_SIZE * 2;
+        if (!aabbIntersectsFrustum(frustum,
+                baseX - 1, CHUNK_MIN_Y, baseZ - 1,
+                baseX + CHUNK_SIZE * 2 - 1, CHUNK_MAX_Y,
+                baseZ + CHUNK_SIZE * 2 - 1)) continue;
+        visibleChunks.push(gpu);
+    }
 
     //  Voxels (per-chunk) 
     gl.useProgram(voxelProgram);
@@ -715,7 +855,7 @@ function render(now) {
         }
     };
 
-    for (const [key, gpu] of chunkGPU) {
+    for (const gpu of visibleChunks) {
         if (gpu.indexCount === 0) continue;
         gl.bindBuffer(gl.ARRAY_BUFFER, gpu.vbo);
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gpu.ibo);
@@ -730,7 +870,7 @@ function render(now) {
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.depthMask(false);
-    for (const [key, gpu] of chunkGPU) {
+    for (const gpu of visibleChunks) {
         if (!gpu.waterIndexCount) continue;
         gl.bindBuffer(gl.ARRAY_BUFFER, gpu.wvbo);
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gpu.wibo);

@@ -2,6 +2,20 @@ export const Mat4 = {
     identity() {
         return new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
     },
+    // Column-major matrix product: out = a * b (applies b first)
+    multiply(a, b) {
+        const out = new Float32Array(16);
+        for (let c = 0; c < 4; c++) {
+            for (let r = 0; r < 4; r++) {
+                out[c * 4 + r] =
+                    a[r]       * b[c * 4]     +
+                    a[4 + r]   * b[c * 4 + 1] +
+                    a[8 + r]   * b[c * 4 + 2] +
+                    a[12 + r]  * b[c * 4 + 3];
+            }
+        }
+        return out;
+    },
     translation(x, y, z) {
         return new Float32Array([
             1,0,0,0,

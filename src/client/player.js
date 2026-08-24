@@ -3,6 +3,7 @@ export function createPlayer() {
         pos: [0.0, 10.0, 0.0],  // will be set by placeOnTerrain()
         vel: [0, 0, 0],
         onGround: false,
+        wasOnGround: false,
         crouching: false,
         sprinting: false,
         keys: {},
@@ -28,6 +29,12 @@ export function createPlayer() {
     window.addEventListener('keyup', (e) => { p.keys[e.code] = false; });
 
     return p;
+}
+
+// Release every held key. Used when the game loses input focus (menu open,
+// window blur) so keys can never get stuck in the down state.
+export function clearKeys(p) {
+    for (const k in p.keys) p.keys[k] = false;
 }
 
 // Place the player on top of the terrain at the given world-grid (x, z).
@@ -60,13 +67,33 @@ function collidesAABB(world, pos, halfW, totalH) {
     return false;
 }
 
+// True when at least one solid block sits directly beneath the player's
+// AABB footprint (probed a hair below the feet).
+function hasSupportBelow(world, pos, halfW) {
+    const minX = Math.floor((pos[0] - halfW + 1) / 2);
+    const maxX = Math.floor((pos[0] + halfW - 0.001 + 1) / 2);
+    const minZ = Math.floor((pos[2] - halfW + 1) / 2);
+    const maxZ = Math.floor((pos[2] + halfW - 0.001 + 1) / 2);
+    const gy = Math.floor((pos[1] - 0.1 + 1) / 2);
+    for (let gx = minX; gx <= maxX; gx++)
+        for (let gz = minZ; gz <= maxZ; gz++)
+            if (world.isSolid(gx, gy, gz)) return true;
+    return false;
+}
+
 function moveHorizontal(world, p, axis, dt, halfW, totalH) {
     const dist = p.vel[axis] * dt;
     if (dist === 0) return;
     const steps = Math.max(1, Math.ceil(Math.abs(dist) / 0.2));
     const step = dist / steps;
 
+    // Sneak edge-guard: while crouching on the ground (and not jumping
+    // upward), refuse any step that would leave the AABB without ground
+    // beneath it - the classic "can't fall off while sneaking" clamp.
+    const edgeGuard = p.crouching && p.wasOnGround && p.vel[1] <= 0;
+
     for (let i = 0; i < steps; i++) {
+        const before = p.pos[axis];
         p.pos[axis] += step;
         if (collidesAABB(world, p.pos, halfW, totalH)) {
             if (p.vel[axis] > 0) {
@@ -78,6 +105,13 @@ function moveHorizontal(world, p, axis, dt, halfW, totalH) {
                 const g = Math.floor((face + 1) / 2);
                 p.pos[axis] = g * 2 + 1 + halfW;
             }
+            p.vel[axis] = 0;
+            return;
+        }
+        if (edgeGuard && !hasSupportBelow(world, p.pos, halfW)) {
+            // Undo the sub-step and kill the velocity so repeated frames
+            // don't creep past the edge.
+            p.pos[axis] = before;
             p.vel[axis] = 0;
             return;
         }
@@ -152,6 +186,8 @@ export function updatePlayer(p, cam, world, dt) {
     moveHorizontal(world, p, 0, dt, halfW, totalH);
     moveHorizontal(world, p, 2, dt, halfW, totalH);
     moveVertical(world, p, dt, halfW, totalH);
+    // Grounded state seen by next frame's sneak edge-guard
+    p.wasOnGround = p.onGround;
 }
 
 export function blockOverlapsPlayer(p, bx, by, bz) {

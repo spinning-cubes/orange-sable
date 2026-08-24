@@ -7,8 +7,8 @@ export function createCamera(canvas) {
         currentFov: Math.PI / 3
     };
 
-    canvas.addEventListener('click', () => canvas.requestPointerLock());
-
+    // Pointer-lock acquisition is owned by the host (main.js) so it can
+    // stay disabled whenever a menu screen is open.
     document.addEventListener('pointerlockchange', () => {
         cam.locked = (document.pointerLockElement === canvas);
     });

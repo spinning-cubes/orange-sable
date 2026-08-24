@@ -26,7 +26,7 @@ main.registerBlock({
     }
 });
 
-['dirt', 'leaf', 'planks', 'sand', 'stone'].forEach(function(block) {
+['dirt', 'leaf', 'planks', 'sand', 'stone', 'test'].forEach(function(block) {
     main.registerBlock({
         name: block,
         description: block.charAt(0).toUpperCase() + block.slice(1),
@@ -44,4 +44,6 @@ main.registerBlock({
     texture: function(face, x, y, z, world) {
         return "water";
     }
-})
+});
+
+main.include('worldgen.js');

@@ -101,9 +101,56 @@ export class ServerWorld extends BaseWorld {
         }
 
         this.generateTrees(chunk, ox, oz);
+        this.generateDecorations(chunk, ox, oz);
 
         chunk.generated = true;
         return chunk;
+    }
+
+    // Scatter modded decorations (plants, flowers, ...) over the chunk.
+    // Each decoration divides the world into spread×spread cells; every cell
+    // has exactly one candidate position derived purely from the seed and
+    // the cell coordinates, so placement never depends on chunk generation
+    // order and cells straddling a chunk border spawn in exactly one chunk.
+    generateDecorations(chunk, ox, oz) {
+        const decos = blockRegistry.decorations;
+        if (!decos || decos.length === 0) return;
+
+        for (const d of decos) {
+            const S = d.spread;
+            const gx0 = Math.floor(ox / S), gx1 = Math.floor((ox + CHUNK_SIZE - 1) / S);
+            const gz0 = Math.floor(oz / S), gz1 = Math.floor((oz + CHUNK_SIZE - 1) / S);
+
+            for (let gcx = gx0; gcx <= gx1; gcx++) {
+                for (let gcz = gz0; gcz <= gz1; gcz++) {
+                    if (hash01(gcx, gcz, d.ordinal * 2654435761 + 7) >= d.density) continue;
+
+                    const wx = gcx * S + Math.floor(hash01(gcx, gcz, d.ordinal + 101) * S);
+                    const wz = gcz * S + Math.floor(hash01(gcx, gcz, d.ordinal + 211) * S);
+
+                    // Candidate may fall outside this chunk; whichever chunk
+                    // contains it will place it.
+                    const lx = wx - ox;
+                    const lz = wz - oz;
+                    if (lx < 0 || lx >= CHUNK_SIZE || lz < 0 || lz >= CHUNK_SIZE) continue;
+
+                    const surfaceY = this.getHeight(wx, wz);
+                    if (surfaceY < d.minHeight || surfaceY > d.maxHeight) continue;
+
+                    const y = surfaceY + 1;
+                    if (y > MAX_Y) continue;
+
+                    // Ground must be real generated terrain that is not a
+                    // fluid, and the target cell must be free (skips water
+                    // columns, tree trunks and any other occupied spot).
+                    const ground = chunk.voxels.get(`${lx},${surfaceY},${lz}`);
+                    if (ground === undefined || blockRegistry.isFluid(ground)) continue;
+                    if (chunk.has(lx, y, lz)) continue;
+
+                    chunk.set(lx, y, lz, d.blockId);
+                }
+            }
+        }
     }
 
     generateTrees(chunk, ox, oz) {
@@ -291,3 +338,11 @@ export class ServerWorld extends BaseWorld {
 // Vertical build limits (generation spans -1..~21, leave headroom)
 const MIN_Y = -1;
 const MAX_Y = 31;
+
+// Deterministic 2D hash -> [0,1). Shared by tree + decoration scattering.
+function hash01(x, z, s) {
+    let h = Math.imul(x, 374761393) ^ Math.imul(z, 668265263) ^ Math.imul(s, 1440662683);
+    h = Math.imul(h ^ (h >>> 13), 1274126177);
+    h ^= h >>> 16;
+    return (h >>> 0) / 4294967296;
+}

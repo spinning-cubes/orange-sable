@@ -14,10 +14,11 @@
 // from any plain static file server. New mods must be added there too.
 let MOD_MODULES = {};
 try {
-    MOD_MODULES = import.meta.glob('./mods/*/init.js');
+    // Use absolute path from project root
+    MOD_MODULES = import.meta.glob('/src/server/mods/*/init.js', { eager: false });
 } catch {
     MOD_MODULES = {
-        './mods/main/init.js': () => import('./mods/main/init.js')
+        '/src/server/mods/main/init.js': () => import('/src/server/mods/main/init.js')
     };
 }
 const MOD_ASSET_BASE = '/src/server/mods';
@@ -27,6 +28,7 @@ export class BlockRegistryServer {
         this._modules = modules || MOD_MODULES;
         this.blocks = [];       // manifest entries; array index = block id
         this.textureUrls = [];  // ordered; array index = atlas layer
+        this.decorations = [];  // worldgen scatters registered by mods
         this._layersByUrl = new Map();
         this._byName = new Map();
         this.manifest = null;
@@ -58,7 +60,11 @@ export class BlockRegistryServer {
     async loadMods() {
         const paths = Object.keys(this._modules).sort();
         for (const path of paths) {
-            const modName = path.split('/')[2];
+            // Glob keys differ by toolchain: relative ('./mods/main/init.js')
+            // or absolute ('/src/server/mods/main/init.js'). Always take the
+            // segment directly after 'mods'.
+            const match = path.match(/\/mods\/([^/]+)\//);
+            const modName = match ? match[1] : path.split('/')[2];
             await this.#loadMod(path, modName);
         }
         this.manifest = {
@@ -73,14 +79,33 @@ export class BlockRegistryServer {
 
     async #loadMod(path, modName) {
         const registered = [];
+        const registeredDecorations = [];
+        const pendingIncludes = [];
         const api = {
             setModNamespace: modName,
-            registerBlock(def) { registered.push(def); }
+            registerBlock(def) { registered.push(def); },
+            // Load another JS file from this mod's folder. The promise is
+            // tracked so a plain top-level call (no await) still finishes
+            // before the manifest is compiled, and `main` stays bound for
+            // the included file.
+            include(file) {
+                const rel = String(file).replace(/^\.\//, '');
+                // Resolve against this module's own directory via string
+                // surgery: Vite's import/URL analyzers interpret template
+                // literals here as glob patterns and reject them.
+                const dirUrl = import.meta.url.replace(/[^/]*$/, '');
+                const p = import(/* @vite-ignore */ dirUrl + 'mods/' + modName + '/' + rel);
+                pendingIncludes.push(p);
+                return p;
+            },
+            registerDecoration(def) { registeredDecorations.push(def); }
         };
 
         globalThis.main = api;
         try {
             await this._modules[path]();
+            // Await inside try: includes must finish while `main` is bound
+            await Promise.all(pendingIncludes);
         } finally {
             delete globalThis.main;
         }
@@ -90,8 +115,12 @@ export class BlockRegistryServer {
         const namespace = typeof api.setModNamespace === 'string'
             ? api.setModNamespace : modName;
 
+        // Blocks first - decorations resolve their node against them
         for (const def of registered) {
             this.#registerBlock(namespace, modName, def);
+        }
+        for (const def of registeredDecorations) {
+            this.#registerDecoration(namespace, modName, def);
         }
     }
 
@@ -138,6 +167,39 @@ export class BlockRegistryServer {
         entry.particle = entry.textures.side;
         this._byName.set(name, entry);
         this.blocks.push(entry);
+    }
+
+    // Validate + namespace a decoration registration. Decorations are
+    // worldgen scatters (flowers, grass plants, ...): one candidate spot per
+    //   spread×spread world cell; `density` [0..1] is the chance the
+    // candidate actually spawns; minHeight/maxHeight bound the terrain
+    // surface height; biome '*' matches every biome.
+    #registerDecoration(namespace, modName, def) {
+        if (!def || typeof def.node !== 'string' || !def.node) {
+            throw new Error(`[block-registry] mod '${modName}' registered a decoration without a node`);
+        }
+        const name = def.node.includes(':') ? def.node : `${namespace}:${def.node}`;
+        const blockId = this.id(name);
+        if (blockId === -1) {
+            throw new Error(`[block-registry] decoration node '${name}' (${modName}) is not a registered block`);
+        }
+        const num = (v, fallback, lo, hi) => {
+            const n = Number(v);
+            if (!Number.isFinite(n)) return fallback;
+            return Math.min(hi, Math.max(lo, n));
+        };
+        this.decorations.push({
+            ordinal: this.decorations.length,
+            node: name,
+            blockId,
+            density: num(def.density, 1, 0, 1),
+            minHeight: num(def.minHeight, 0, -Infinity, Infinity),
+            maxHeight: num(def.maxHeight, 64, -Infinity, Infinity),
+            spread: Math.max(1, Math.floor(num(def.spread, 8, 1, Infinity))),
+            biomes: Array.isArray(def.biome)
+                ? def.biome.map(String)
+                : [String(def.biome ?? '*')]
+        });
     }
 
     #textureLayer(url) {
