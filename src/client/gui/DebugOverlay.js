@@ -12,7 +12,7 @@ export default class DebugOverlay extends Screen {
         this.view.loadData(`
 formspec_version[6]
 size[8,4]
-label[0.1,0.3;OrangeSable 1.0;dbg_version]
+label[0.1,0.3;OrangeSable 1.1;dbg_version]
 label[0.1,0.6;X: 0.0 Y: 0.0 Z: 0.0;dbg_coords]
 label[0.1,0.9;TX: 0 / RX: 0;dbg_net]
         `);
