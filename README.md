@@ -1,4 +1,5 @@
 # OrangeSable
+[![pages-build-deployment](https://github.com/spinning-cubes/orange-sable/actions/workflows/pages/pages-build-deployment/badge.svg?branch=main)](https://github.com/spinning-cubes/orange-sable/actions/workflows/pages/pages-build-deployment)  
 OrangeSable is a fast, multi-threaded voxel engine for JavaScript.  
 Written with raw WebGL for maximum performance, it is designed to be used as a game engine for any of your wildest ideas.
 
