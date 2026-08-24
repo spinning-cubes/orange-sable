@@ -16,6 +16,8 @@ import { createParticleSystem, spawnBreakParticles, updateParticles, buildPartic
 import { IsomorphicWebSocket } from '../shared/IsomorphicWebSocket.js';
 import { netStats } from './netstats.js';
 import DebugOverlay from './gui/DebugOverlay.js';
+import IngameMenu from './gui/IngameMenu.js';
+import SettingsScreen from './gui/Settings.js';
 
 const canvas = document.getElementById('glCanvas');
 const gl = canvas.getContext('webgl2')
@@ -94,28 +96,43 @@ const RENDER_DISTANCE_MIN = 2;
 const RENDER_DISTANCE_MAX = 16;
 const RENDER_DISTANCE_KEY = 'sable.renderDistance';
 
-function loadSavedRenderDistance() {
+const FOV_DEFAULT = 70;             // degrees
+const FOV_MIN = 30;
+const FOV_MAX = 110;
+const FOV_KEY = 'sable.fov';
+
+function loadSavedNumber(key, fallback, min, max) {
     try {
-        const saved = parseInt(localStorage.getItem(RENDER_DISTANCE_KEY), 10);
+        const saved = parseInt(localStorage.getItem(key), 10);
         if (Number.isInteger(saved)) {
-            return Math.min(RENDER_DISTANCE_MAX, Math.max(RENDER_DISTANCE_MIN, saved));
+            return Math.min(max, Math.max(min, saved));
         }
     } catch { /* storage unavailable - fall back to default */ }
-    return RENDER_DISTANCE_DEFAULT;
+    return fallback;
 }
 
 let screen = null;
+
+// Screens resolve their exit through this host so main's active-screen
+// pointer always tracks what is really on display.
+const screenHost = {
+    onScreenExit(closed) {
+        screen = closed.lastScreen || null;
+    }
+};
 
 function showScreen(screenClass, ...args) {
     if (screen) {
         screen.view.delete();
     }
-    screen = new screenClass(this, screen ?? null, ...args);
+    screen = new screenClass(screenHost, screen ?? null, ...args);
     screen.render();
 }
 
 // Calculate fog distance based on render distance
-let renderDistance = loadSavedRenderDistance();
+let renderDistance = loadSavedNumber(RENDER_DISTANCE_KEY,
+    RENDER_DISTANCE_DEFAULT, RENDER_DISTANCE_MIN, RENDER_DISTANCE_MAX);
+let fovDeg = loadSavedNumber(FOV_KEY, FOV_DEFAULT, FOV_MIN, FOV_MAX);
 let RENDER_DISTANCE_UNITS = 0; // Convert chunks to world units
 let FOG_NEAR = 0;
 let FOG_FAR   = 0;
@@ -126,6 +143,35 @@ function applyRenderDistance() {
     FOG_FAR  = RENDER_DISTANCE_UNITS;
 }
 applyRenderDistance();
+
+function applyFov() {
+    camera.baseFov = fovDeg * Math.PI / 180;
+}
+
+// Shared setters: clamp, apply immediately, persist. Used by the settings
+// screen and the +/- hotkeys alike.
+function setRenderDistance(value) {
+    const v = Math.round(Number(value));
+    if (!Number.isFinite(v)) return;
+    const next = Math.min(RENDER_DISTANCE_MAX, Math.max(RENDER_DISTANCE_MIN, v));
+    if (next === renderDistance) return;
+    renderDistance = next;
+    applyRenderDistance();
+    // Force updateChunkLoading() to re-evaluate loads/unloads this chunk
+    lastPlayerChunkX = null;
+    lastPlayerChunkZ = null;
+    try { localStorage.setItem(RENDER_DISTANCE_KEY, String(renderDistance)); } catch { }
+}
+
+function setFov(value) {
+    const v = Math.round(Number(value));
+    if (!Number.isFinite(v)) return;
+    const next = Math.min(FOV_MAX, Math.max(FOV_MIN, v));
+    if (next === fovDeg) return;
+    fovDeg = next;
+    applyFov();
+    try { localStorage.setItem(FOV_KEY, String(fovDeg)); } catch { }
+}
 
 // Per-chunk GPU data: { vbo, ibo, indexCount, indexGL, wvbo, wibo, waterIndexCount, waterIndexGL }
 const chunkGPU = new Map();
@@ -184,8 +230,46 @@ const world = new World(42);
 const camera = createCamera(canvas);
 const player = createPlayer();
 
+// Apply the persisted FOV once the camera exists
+applyFov();
+
 // Debug HUD needs the live player reference for the X/Y/Z readout
 showScreen(DebugOverlay, { player });
+
+//  Pause menu on pointer-lock loss (Esc, alt-tab, ...) 
+function openIngameMenu() {
+    // Already paused (menu or its settings open) - nothing to do
+    if (screen instanceof IngameMenu || screen instanceof SettingsScreen) return;
+
+    showScreen(IngameMenu, {
+        onResume: () => {
+            // Restore the debug HUD and grab the mouse again
+            showScreen(DebugOverlay, { player });
+            canvas.requestPointerLock();
+        },
+        onSettings: () => showScreen(SettingsScreen, {
+            renderDistance,
+            fov: fovDeg,
+            onSave: (s) => {
+                setRenderDistance(s.renderDistance);
+                setFov(s.fov);
+            }
+        }) // exits back into this menu
+    });
+}
+
+let pointerWasLocked = false;
+document.addEventListener('pointerlockchange', () => {
+    const locked = document.pointerLockElement === canvas;
+    if (pointerWasLocked && !locked) openIngameMenu();
+    pointerWasLocked = locked;
+});
+
+document.addEventListener('pointerlockerror', () => {
+    // A relock request was rejected (browsers enforce a cooldown right
+    // after Esc) - drop back into the menu so the game stays paused.
+    openIngameMenu();
+});
 
 // Mesh building runs on the main thread now (the integrated server worker
 // owns generation); a small per-frame budget keeps the loop smooth.
@@ -564,17 +648,7 @@ window.addEventListener('keydown', (e) => {
     else if (e.code === 'Minus' || e.code === 'NumpadSubtract') delta = -1;
     else return;
 
-    const next = Math.min(RENDER_DISTANCE_MAX,
-        Math.max(RENDER_DISTANCE_MIN, renderDistance + delta));
-    if (next === renderDistance) return;
-    renderDistance = next;
-    applyRenderDistance();
-
-    // Force updateChunkLoading() to re-evaluate loads/unloads this chunk
-    lastPlayerChunkX = null;
-    lastPlayerChunkZ = null;
-
-    try { localStorage.setItem(RENDER_DISTANCE_KEY, String(renderDistance)); } catch { }
+    setRenderDistance(renderDistance + delta);
 });
 
 //  Render loop 

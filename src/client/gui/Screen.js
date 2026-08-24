@@ -16,9 +16,11 @@ export default class Screen {
     exit() {
         this.view.delete();
         if (this.lastScreen) {
-            // Restore the game's active screen reference to the parent screen
-            this.game.screen = this.lastScreen;
             this.lastScreen.render();
+        }
+        // Let the host re-point its active screen at whatever is visible now
+        if (this.game && typeof this.game.onScreenExit === 'function') {
+            this.game.onScreenExit(this);
         }
     }
 }
