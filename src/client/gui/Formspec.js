@@ -450,15 +450,6 @@ export default class Formspec {
     }
 
     _injectStyles() {
-        if (!document.getElementById('formspec-external-link-css')) {
-            const linkNode = document.createElement('link');
-            linkNode.id = 'formspec-external-link-css';
-            linkNode.rel = 'stylesheet';
-            linkNode.type = 'text/css';
-            linkNode.href = 'page/style/gui/all.css';
-            document.head.appendChild(linkNode);
-        }
-
         if (!document.getElementById('formspec-disabled-patch-css')) {
             const styleNode = document.createElement('style');
             styleNode.id = 'formspec-disabled-patch-css';

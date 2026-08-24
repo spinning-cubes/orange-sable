@@ -10,12 +10,16 @@
 // The texture resolver is evaluated once per face here so the manifest can
 // stay plain JSON (static layer indices) instead of shipping code.
 // Discovered by Vite (dev + build rewrite this call into a static module
-// map); guarded so this module also loads under plain Node, where tests
-// inject their own module map instead.
+// map); outside Vite we fall back to a static list so the game also runs
+// from any plain static file server. New mods must be added there too.
 let MOD_MODULES = {};
 try {
     MOD_MODULES = import.meta.glob('./mods/*/init.js');
-} catch { /* no Vite runtime - caller must provide modules */ }
+} catch {
+    MOD_MODULES = {
+        './mods/main/init.js': () => import('./mods/main/init.js')
+    };
+}
 const MOD_ASSET_BASE = '/src/server/mods';
 
 export class BlockRegistryServer {
