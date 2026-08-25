@@ -70,6 +70,17 @@ main.registerBlock({
 });
 
 main.registerBlock({
+    name: "grassplant_sand_2",
+    description: "Sandy Grass Plant (alt)",
+    renderType: "plant",
+    isSolid: false,
+    isTransparent: true,
+    texture: function(face, x, y, z, world) {
+        return "grassplant_sand2";
+    }
+});
+
+main.registerBlock({
     name: "water",
     description: "Water",
     isFluid: true,

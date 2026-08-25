@@ -12,6 +12,9 @@ import { World, Chunk, CHUNK_SIZE } from './world.js';
 import { voxelRaycast } from './raycast.js';
 import { createCamera, cameraForward, updateCameraFov } from './camera.js';
 import { createPlayer, updatePlayer, playerEyePos, blockOverlapsPlayer, placeOnTerrain, clearKeys } from './player.js';
+import { loadPlayerModel } from './playerModel.js';
+import playerObjUrl from './assets/model/player/player.obj?url';
+import playerMtlUrl from './assets/model/player/player.mtl?url';
 import { createParticleSystem, spawnBreakParticles, updateParticles, buildParticleBuffer } from './particles.js';
 import { frustumPlanes, aabbIntersectsFrustum } from './frustum.js';
 import { IsomorphicWebSocket } from '../shared/IsomorphicWebSocket.js';
@@ -67,7 +70,8 @@ const voxelUniforms = {
     fogColor:   gl.getUniformLocation(voxelProgram, 'uFogColor'),
     fogNear:    gl.getUniformLocation(voxelProgram, 'uFogNear'),
     fogFar:     gl.getUniformLocation(voxelProgram, 'uFogFar'),
-    alphaTest:  gl.getUniformLocation(voxelProgram, 'uAlphaTest')
+    alphaTest:  gl.getUniformLocation(voxelProgram, 'uAlphaTest'),
+    smoothShade: gl.getUniformLocation(voxelProgram, 'uSmoothShade')
 };
 const glowAttribs = { position: gl.getAttribLocation(glowProgram, 'aPosition') };
 const glowUniforms = {
@@ -263,6 +267,25 @@ const world = new World(42);
 
 const camera = createCamera(canvas);
 const player = createPlayer();
+
+// Player avatar for third-person views. Loads async; null until ready
+// (or permanently null on WebGL1, where the model is unsupported).
+let playerModel = null;
+loadPlayerModel(gl, { obj: playerObjUrl, mtl: playerMtlUrl })
+    .then((m) => { playerModel = m; })
+    .catch((e) => console.error('[client] player model failed:', e));
+
+// Camera perspective cycling (F5): first person -> third back -> front.
+const CAM_FIRST_PERSON = 0;
+const CAM_THIRD_BACK   = 1;
+const CAM_THIRD_FRONT  = 2;
+let cameraMode = CAM_FIRST_PERSON;
+
+window.addEventListener('keydown', (e) => {
+    if (e.code !== 'F5') return;
+    e.preventDefault(); // don't reload the page
+    cameraMode = (cameraMode + 1) % 3;
+});
 
 // Apply the persisted FOV once the camera exists
 applyFov();
@@ -803,10 +826,27 @@ function render(now) {
 
     const eye = playerEyePos(player);
     const forward = cameraForward(camera);
-    const lookX = eye[0] + forward[0];
-    const lookY = eye[1] + forward[1];
-    const lookZ = eye[2] + forward[2];
-    const viewMat = Mat4.lookAt(eye, [lookX, lookY, lookZ], [0, 1, 0]);
+
+    // Third-person boom: pull the viewpoint back along -forward (back
+    // view) or push it ahead along +forward (front view), clamped against
+    // terrain so the camera never ends up inside a block.
+    const THIRD_PERSON_DIST = 4.0;
+    let viewEye = eye;
+    if (cameraMode !== CAM_FIRST_PERSON) {
+        const sign = cameraMode === CAM_THIRD_BACK ? -1 : 1;
+        const dir = [forward[0] * sign, forward[1] * sign, forward[2] * sign];
+        let d = THIRD_PERSON_DIST;
+        const wall = voxelRaycast(world, eye, dir, d);
+        if (wall) d = Math.max(0.5, Math.min(d, wall.t * 2 - 0.25));
+        viewEye = [eye[0] + dir[0] * d, eye[1] + dir[1] * d, eye[2] + dir[2] * d];
+    }
+    // lookAt() needs eye != target (zero-length axis would produce NaNs):
+    // first/back views look ahead along forward, the front view looks at
+    // the player from ahead.
+    const lookTarget = cameraMode === CAM_THIRD_FRONT
+        ? eye
+        : [eye[0] + forward[0], eye[1] + forward[1], eye[2] + forward[2]];
+    const viewMat = Mat4.lookAt(viewEye, lookTarget, [0, 1, 0]);
 
     //  Frustum culling: skip chunks outside the view (behind the player,
     //  above/below or beside the screen). Chunk world AABBs are derived
@@ -839,6 +879,7 @@ function render(now) {
     gl.uniform1f(voxelUniforms.fogNear, FOG_NEAR);
     gl.uniform1f(voxelUniforms.fogFar,  FOG_FAR);
     gl.uniform1f(voxelUniforms.alphaTest, 0.0);
+    gl.uniform1f(voxelUniforms.smoothShade, 0.0);
 
     const bindVoxelAttribs = () => {
         gl.vertexAttribPointer(voxelAttribs.position, 3, gl.FLOAT, false, FSIZE * 10, 0);
@@ -861,6 +902,42 @@ function render(now) {
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gpu.ibo);
         bindVoxelAttribs();
         gl.drawElements(gl.TRIANGLES, gpu.indexCount, gpu.indexGL, 0);
+    }
+
+    //  Player avatar (third-person views only). Rendered with the chunk
+    //  shader: the avatar buffer uses the same 10-float vertex layout with
+    //  AO baked to 1 and layer 0, and its skin is a private single-layer
+    //  TEXTURE_2D_ARRAY bound in place of the world atlas.
+    if (cameraMode !== CAM_FIRST_PERSON && playerModel) {
+        // This export's front axis sits -90° off engine-forward (yaw 0 =
+        // -Z), so pre-rotate by -PI/2 to line the avatar up with the view.
+        const totalH = player.crouching ? player.crouchHeight : player.height;
+        const s = totalH / playerModel.height;
+        const modelMat = Mat4.multiply(
+            Mat4.translation(player.pos[0], player.pos[1], player.pos[2]),
+            Mat4.multiply(
+                Mat4.rotationY(-(camera.yaw)),
+                Mat4.translationScale(0, 0, 0, s)
+            )
+        );
+
+        gl.uniformMatrix4fv(voxelUniforms.model, false, modelMat);
+        // Curved OBJ surfaces need continuous lighting, not the chunk
+        // shader's 8-way axis-snapped facet shading
+        gl.uniform1f(voxelUniforms.smoothShade, 1.0);
+        gl.bindTexture(playerModel.texture.target, playerModel.texture.texture);
+        // Blockbench winding order isn't guaranteed per part - draw double-sided
+        gl.disable(gl.CULL_FACE);
+        gl.bindBuffer(gl.ARRAY_BUFFER, playerModel.vbo);
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, playerModel.ibo);
+        bindVoxelAttribs();
+        gl.drawElements(gl.TRIANGLES, playerModel.indexCount, gl.UNSIGNED_SHORT, 0);
+        gl.enable(gl.CULL_FACE);
+
+        // Chunk passes below expect identity transforms and the world atlas
+        gl.uniformMatrix4fv(voxelUniforms.model, false, Mat4.identity());
+        gl.uniform1f(voxelUniforms.smoothShade, 0.0);
+        gl.bindTexture(tex.target, tex.texture);
     }
 
     //  Cutout transparents (plants, glass-style blocks).

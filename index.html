@@ -3,12 +3,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OrangeSable v1.1</title>
+    <title>OrangeSable - Loading...</title>
     <link rel="icon" type="image/png" href="/src/client/page/icon/favicon-96x96.png" sizes="96x96"/>
     <link rel="icon" type="image/svg+xml" href="/src/client/page/icon/favicon.svg"/>
     <link rel="shortcut icon" href="/src/client/page/icon/favicon.ico"/>
     <link rel="apple-touch-icon" sizes="180x180" href="/src/client/page/icon/apple-touch-icon.png"/>
     <link rel="manifest" href="/src/client/page/icon/site.webmanifest"/>
+    <script>
+        window.VERSION_GAME = '1.2';
+        document.title = `OrangeSable ${window.VERSION_GAME}`;
+    </script>
     <script>
         (function injectLogger() {
             const globalObj = typeof window !== 'undefined' ? window : global;

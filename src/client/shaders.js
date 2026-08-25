@@ -36,20 +36,27 @@ export const VOXEL_FS = `
     uniform float uFogNear;
     uniform float uFogFar;
     uniform float uAlphaTest;
+    uniform float uSmoothShade;
     void main() {
         // WebGL1 fallback: reconstruct atlas UV from tile-local coords + layer
         vec2 uv = vec2((vTexLayer + vTexCoord.x) / 8.0, vTexCoord.y);
         vec4 texColor = texture2D(uTexture, uv);
         if (uAlphaTest > 0.0 && texColor.a < uAlphaTest) discard;
         vec3 norm = normalize(vNormal);
-        vec3 anorm = abs(norm);
         float shade;
-        if (anorm.y > anorm.x && anorm.y > anorm.z) {
-            shade = norm.y > 0.0 ? 0.88 : 0.42;
-        } else if (anorm.x > anorm.z) {
-            shade = norm.x > 0.0 ? 0.62 : 0.50;
+        if (uSmoothShade > 0.5) {
+            // Continuous directional lighting - no axis snapping, so curved
+            // surfaces (player avatar) don't band into flat facets.
+            shade = 0.42 + 0.46 * clamp(dot(norm, normalize(vec3(0.35, 1.0, 0.2))), 0.0, 1.0);
         } else {
-            shade = norm.z > 0.0 ? 0.72 : 0.56;
+            vec3 anorm = abs(norm);
+            if (anorm.y > anorm.x && anorm.y > anorm.z) {
+                shade = norm.y > 0.0 ? 0.88 : 0.42;
+            } else if (anorm.x > anorm.z) {
+                shade = norm.x > 0.0 ? 0.62 : 0.50;
+            } else {
+                shade = norm.z > 0.0 ? 0.72 : 0.56;
+            }
         }
         vec3 color = texColor.rgb * shade * vAO;
         // Distance fog
@@ -98,20 +105,27 @@ uniform vec3 uFogColor;
 uniform float uFogNear;
 uniform float uFogFar;
 uniform float uAlphaTest;
+uniform float uSmoothShade;
 out vec4 fragColor;
 void main() {
     // Each tile lives on its own array layer - no atlas bleed possible
     vec4 texColor = texture(uTexture, vec3(vTexCoord, vTexLayer));
     if (uAlphaTest > 0.0 && texColor.a < uAlphaTest) discard;
     vec3 norm = normalize(vNormal);
-    vec3 anorm = abs(norm);
     float shade;
-    if (anorm.y > anorm.x && anorm.y > anorm.z) {
-        shade = norm.y > 0.0 ? 0.88 : 0.42;
-    } else if (anorm.x > anorm.z) {
-        shade = norm.x > 0.0 ? 0.62 : 0.50;
+    if (uSmoothShade > 0.5) {
+        // Continuous directional lighting - no axis snapping, so curved
+        // surfaces (player avatar) don't band into flat facets.
+        shade = 0.42 + 0.46 * clamp(dot(norm, normalize(vec3(0.35, 1.0, 0.2))), 0.0, 1.0);
     } else {
-        shade = norm.z > 0.0 ? 0.72 : 0.56;
+        vec3 anorm = abs(norm);
+        if (anorm.y > anorm.x && anorm.y > anorm.z) {
+            shade = norm.y > 0.0 ? 0.88 : 0.42;
+        } else if (anorm.x > anorm.z) {
+            shade = norm.x > 0.0 ? 0.62 : 0.50;
+        } else {
+            shade = norm.z > 0.0 ? 0.72 : 0.56;
+        }
     }
     vec3 color = texColor.rgb * shade * vAO;
     float fogFactor = clamp((uFogFar - vFogDist) / (uFogFar - uFogNear), 0.0, 1.0);

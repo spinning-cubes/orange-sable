@@ -33,6 +33,18 @@ export const Mat4 = {
             tx, ty, tz, 1
         ]);
     },
+    // Column-major rotation about the Y axis (radians, right-handed).
+    // Used to orient the player avatar model with the view yaw.
+    rotationY(angle) {
+        const c = Math.cos(angle);
+        const s = Math.sin(angle);
+        return new Float32Array([
+            c, 0, -s, 0,
+            0, 1, 0, 0,
+            s, 0, c, 0,
+            0, 0, 0, 1
+        ]);
+    },
     perspective(fovy, aspect, near, far) {
         const f = 1.0 / Math.tan(fovy / 2);
         const nf = 1 / (near - far);
